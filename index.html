@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SHIKIGAMI FLOW</title>
+<style>
+  :root {
+    --ink: #f2f0ea;
+    --dim: rgba(242, 240, 234, 0.55);
+    --red: #ff4a3d;
+    --violet: #b06bff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #06060a; }
+  body {
+    font-family: Consolas, "SF Mono", Menlo, monospace;
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+    cursor: crosshair;
+  }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; }
+
+  #vignette {
+    position: fixed; inset: 0; pointer-events: none; z-index: 5;
+    background: radial-gradient(ellipse at 50% 48%, rgba(0,0,0,0) 45%, rgba(0,0,0,0.55) 100%);
+  }
+  #flash {
+    position: fixed; inset: 0; pointer-events: none; z-index: 6;
+    background: #fff; opacity: 0;
+  }
+  .ui { position: fixed; z-index: 10; pointer-events: none; }
+
+  #swarm { left: 24px; bottom: 22px; letter-spacing: 0.18em; }
+  #swarm .label { font-size: 11px; color: var(--dim); }
+  #swarm .count { font-size: 34px; line-height: 1.05; font-weight: 600; }
+  #swarm .count .cur { font-size: 40px; }
+  #swarm .count .max { color: var(--dim); font-size: 18px; }
+  #swarm .corrupt { font-size: 11px; color: var(--violet); height: 14px; letter-spacing: 0.14em; }
+  .bar { width: 210px; height: 4px; background: rgba(255,255,255,0.12); margin-top: 7px; position: relative; }
+  .bar > i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--ink); display: block; transition: width .12s linear; }
+  #hpbar > i { background: #6fd2ff; }
+  #hp { left: 24px; bottom: 108px; }
+  #hp .label { font-size: 10px; color: var(--dim); letter-spacing: .18em; margin-bottom: 2px; }
+  #hp .bar { width: 140px; }
+
+  #boss { top: 26px; left: 50%; transform: translateX(-50%); width: 46vw; min-width: 380px; opacity: 0; transition: opacity .4s; }
+  #boss.on { opacity: 1; }
+  #boss .name { font-size: 12px; letter-spacing: .34em; color: var(--red); text-align: center; margin-bottom: 6px; }
+  #boss .bar { width: 100%; height: 7px; background: rgba(255,255,255,0.1); }
+  #boss .bar > i { background: linear-gradient(90deg, #ff2d1c, #ff8a5c); transition: width .18s ease-out; }
+  #boss .phase { font-size: 10px; letter-spacing: .2em; color: var(--dim); text-align: right; margin-top: 4px; }
+
+  #controls {
+    left: 50%; bottom: 34px; transform: translateX(-50%);
+    display: flex; gap: 26px; transition: opacity .8s;
+  }
+  #controls .k { text-align: center; }
+  #controls .key { font-size: 13px; letter-spacing: .1em; }
+  #controls .act { font-size: 9px; color: var(--dim); letter-spacing: .16em; margin-top: 3px; }
+
+  /* the disturbance itself is off-screen at this camera pitch, so a small
+     edge marker points at it (spec 30 allows exactly this, and no more) */
+  #marker {
+    left: 0; top: 0; opacity: 0; transition: opacity .35s;
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+    transform: translate(-50%, -50%);
+  }
+  #marker.on { opacity: .8; }
+  #marker i {
+    display: block; width: 0; height: 0;
+    border-left: 6px solid transparent; border-right: 6px solid transparent;
+    border-bottom: 10px solid #c1352a;
+  }
+  #marker em { font-style: normal; font-size: 9px; letter-spacing: .16em; color: #b8555a; }
+
+  /* wayfinding is the light in the world; this is only a quiet label (spec 30) */
+  #objective {
+    left: 50%; top: 74px; transform: translateX(-50%); text-align: center;
+    opacity: 0; transition: opacity .5s; white-space: nowrap;
+  }
+  #objective.on { opacity: 1; }
+  #objective b { display: block; font-size: 15px; letter-spacing: .34em; font-weight: 400; }
+  #objective span { display: block; font-size: 9px; letter-spacing: .28em; color: var(--dim); margin-top: 4px; }
+
+  #banner {
+    left: 50%; top: 21%; transform: translateX(-50%);
+    font-size: 26px; letter-spacing: .34em; text-align: center;
+    opacity: 0; transition: opacity .35s; white-space: nowrap;
+    text-shadow: 0 0 24px rgba(255,255,255,.35);
+  }
+  #banner.on { opacity: 1; }
+  #skillname {
+    left: 50%; top: 42%; transform: translateX(-50%);
+    font-size: 20px; letter-spacing: .5em; color: #ffe9a8; opacity: 0;
+    text-shadow: 0 0 20px rgba(255,210,120,.6);
+  }
+
+  /* ---- vermilion seal (spec 13) ---- */
+  #seal {
+    position: fixed; left: 50%; top: 34%; z-index: 11; pointer-events: none;
+    transform: translate(-50%, -50%) rotate(var(--seal-rot, 0deg)) scale(0.82);
+    opacity: 0; transition: opacity .12s ease-out, transform .22s cubic-bezier(.2,1.5,.4,1);
+    display: flex; flex-direction: column; align-items: center; gap: 9px;
+  }
+  #seal.on { opacity: 1; transform: translate(-50%,-50%) rotate(var(--seal-rot,0deg)) scale(1); }
+  #seal .stamp {
+    width: 92px; height: 92px; background: #c1352a; position: relative;
+    box-shadow: 0 0 0 3px #c1352a, inset 0 0 0 5px #efe9dc;
+  }
+  /* abstract carved strokes -- a placeholder for a real tenkoku design */
+  #seal .stamp::before, #seal .stamp::after {
+    content: ''; position: absolute; background: #efe9dc;
+  }
+  #seal .stamp::before { left: 22px; top: 30px; width: 48px; height: 7px; box-shadow: 0 18px 0 #efe9dc; }
+  #seal .stamp::after { left: 42px; top: 20px; width: 7px; height: 52px; }
+  #seal .seal-hits {
+    font-size: 12px; letter-spacing: .3em; color: #c1352a; font-weight: 700;
+  }
+
+  #dmg { position: fixed; inset: 0; z-index: 9; pointer-events: none; overflow: hidden; }
+  .dn {
+    position: absolute; font-size: 15px; font-weight: 700; letter-spacing: .02em;
+    transform: translate(-50%, -50%); text-shadow: 0 2px 6px rgba(0,0,0,.85);
+    transition: transform .62s cubic-bezier(.15,.8,.3,1), opacity .62s ease-in;
+  }
+  .dn.big { font-size: 30px; color: #fff2c0; }
+  .dn.guard { color: #9fb6c8; font-size: 13px; }
+  /* orbit ring / spread graze -- deliberately quiet next to a recall */
+  .dn.light { color: #93a9bd; font-size: 11px; font-weight: 600; opacity: .8; }
+
+  #debugbtn {
+    position: fixed; right: 12px; top: 12px; z-index: 30; pointer-events: auto;
+    font: 10px/1 Consolas, monospace; letter-spacing: .16em; color: var(--dim);
+    background: rgba(10,10,16,.7); border: 1px solid rgba(255,255,255,.16);
+    padding: 6px 9px; cursor: pointer;
+  }
+  #debugbtn:hover { color: #fff; }
+  #debug {
+    position: fixed; right: 12px; top: 42px; z-index: 30; width: 234px;
+    background: rgba(8,8,14,.82); border: 1px solid rgba(255,255,255,.14);
+    padding: 10px; font-size: 11px; pointer-events: auto; display: none;
+  }
+  #debug.on { display: block; }
+  #debug .row { display: flex; justify-content: space-between; color: var(--dim); line-height: 1.55; }
+  #debug .row b { color: var(--ink); font-weight: 500; }
+  #debug h4 {
+    margin: 10px 0 6px; font-size: 10px; letter-spacing: .2em; color: var(--dim);
+    border-top: 1px solid rgba(255,255,255,.12); padding-top: 8px; font-weight: 400;
+  }
+  #tuner { max-height: 58vh; overflow-y: auto; }
+  #debug { max-height: 92vh; overflow-y: auto; }
+  .subhead { font-size: 9px; letter-spacing: .22em; color: var(--dim); margin: 6px 0 3px; }
+  .presets .btn.sel { background: rgba(255,217,138,.22); border-color: #ffd98a; color: #ffd98a; }
+  .chk {
+    display: flex; align-items: center; gap: 7px; font-size: 11px;
+    letter-spacing: .12em; cursor: pointer; margin: 2px 0 7px;
+  }
+  .chk input { accent-color: #c1352a; cursor: pointer; margin: 0; }
+  .presets { display: flex; gap: 5px; margin-bottom: 7px; }
+  .presets .btn { margin: 0; flex: 1; padding: 5px 0; letter-spacing: .06em; }
+  .sl { margin-bottom: 5px; }
+  .sl label { display: flex; justify-content: space-between; font-size: 10px; color: var(--dim); }
+  .sl label b { color: #ffd98a; font-weight: 500; }
+  .sl input { width: 100%; height: 12px; margin: 1px 0 0; accent-color: #ffd98a; cursor: pointer; }
+  .btn {
+    display: block; width: 100%; margin-top: 7px; padding: 6px;
+    font: 10px/1 Consolas, monospace; letter-spacing: .16em; cursor: pointer;
+    background: rgba(255,255,255,.08); color: var(--ink); border: 1px solid rgba(255,255,255,.2);
+  }
+  .btn:hover { background: rgba(255,255,255,.18); }
+
+  /* ---- start screen ---- */
+  #start {
+    position: fixed; inset: 0; z-index: 50; display: flex;
+    flex-direction: column; align-items: center; justify-content: center;
+    background: #06060a; pointer-events: auto; padding: 24px;
+  }
+  #start.off { display: none; }
+  #start .title { font-size: 30px; letter-spacing: .5em; margin-bottom: 4px; }
+  /* Arena is the mode being tested, so it carries the visual weight; Kyoto
+     stays reachable at roughly half that (spec 4/48). */
+  #start .modes { display: flex; flex-direction: column; align-items: center; gap: 10px; width: 360px; }
+  #start .modes .btn.big {
+    width: 100%; padding: 17px; font-size: 14px; letter-spacing: .34em;
+    background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.42);
+  }
+  #start .modes .btn.big:hover { background: rgba(255,255,255,.24); }
+  #start .modes .btn.big:focus-visible { outline: 2px solid #ffd98a; outline-offset: 3px; }
+  #start .modes .btn.small {
+    width: 62%; margin: 2px 0 0; padding: 7px; font-size: 9px;
+    letter-spacing: .16em; opacity: .5; border-color: rgba(255,255,255,.12);
+    text-transform: none;
+  }
+  #start .modes .btn.small:hover { opacity: .95; }
+  #start .sub { font-size: 10px; letter-spacing: .3em; color: var(--dim); margin-bottom: 26px; }
+  #start .grouphead {
+    font-size: 10px; letter-spacing: .28em; color: var(--dim);
+    width: 100%; max-width: 660px; margin: 14px 0 8px; padding-bottom: 5px;
+    border-bottom: 1px solid rgba(255,255,255,.14);
+  }
+  #start .slots { display: flex; flex-direction: column; gap: 7px; width: 100%; max-width: 660px; }
+  #start .pitch {
+    font-size: 11px; color: var(--dim); line-height: 1.9; text-align: center;
+    letter-spacing: .08em; margin-bottom: 8px;
+  }
+  .slot {
+    display: flex; align-items: baseline; gap: 14px; text-align: left;
+    padding: 11px 14px; color: var(--ink);
+    background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.16);
+  }
+  .slot .k { font-size: 12px; letter-spacing: .1em; color: #ffd98a; width: 48px; flex: none; }
+  .slot .n { font-size: 13px; letter-spacing: .2em; width: 150px; flex: none; }
+  .slot .d { font-size: 10px; color: var(--dim); letter-spacing: .04em; line-height: 1.45; }
+  .btn.big { width: auto; padding: 12px 40px; font-size: 12px; margin-top: 22px; }
+
+  /* ---- skill cooldowns ---- */
+  #skills { right: 24px; bottom: 24px; display: flex; gap: 10px; }
+  #skills .sk {
+    width: 46px; height: 46px; position: relative; overflow: hidden;
+    border: 1px solid rgba(255,255,255,.24); background: rgba(10,12,20,.6);
+  }
+  #skills .sk .fill {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 0%;
+    background: rgba(0,0,0,.72);
+  }
+  #skills .sk .lab {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 2px;
+  }
+  #skills .sk .key { font-size: 11px; letter-spacing: .08em; color: #ffd98a; }
+  #skills .sk .nm { font-size: 7px; letter-spacing: .1em; color: var(--dim); }
+
+  #hitcount {
+    left: 50%; top: 40%; transform: translateX(-50%) scale(0.9);
+    font-size: 34px; letter-spacing: .18em; color: #fff4d0; opacity: 0;
+    text-shadow: 0 0 26px rgba(255,220,150,.7); padding: 8px 22px;
+  }
+  /* a composed 術式 gets a frame rather than a louder number (spec 40) */
+  #hitcount.formula {
+    color: #ffffff;
+    border-top: 1px solid rgba(255,240,200,.75);
+    border-bottom: 1px solid rgba(255,240,200,.75);
+    text-shadow: 0 0 34px rgba(255,235,190,.95);
+  }
+  #start .foot { margin-top: 22px; font-size: 10px; color: var(--dim); letter-spacing: .14em; }
+
+  /* ---- growth pop ---- */
+  #pop {
+    left: 50%; top: 56%; transform: translateX(-50%); text-align: center;
+    opacity: 0; transition: opacity .4s;
+  }
+  #pop .g { font-size: 22px; letter-spacing: .3em; color: #ffe9a8; text-shadow: 0 0 18px rgba(255,210,120,.7); }
+  #pop .t { font-size: 11px; letter-spacing: .22em; color: var(--dim); margin-top: 3px; }
+  #timer {
+    top: 14px; left: 50%; transform: translateX(-50%);
+    font-size: 13px; letter-spacing: .22em; color: var(--dim);
+  }
+  #modetag {
+    top: 14px; left: 20px; font-size: 10px; letter-spacing: .22em; color: var(--dim);
+  }
+  #modetag b { color: #ffd98a; font-weight: 500; }
+
+  #end {
+    position: fixed; inset: 0; z-index: 40; display: none;
+    flex-direction: column; align-items: center; justify-content: center;
+    background: rgba(4,4,8,.78); pointer-events: auto;
+  }
+  #end.on { display: flex; }
+  #end h1 { font-size: 34px; letter-spacing: .4em; margin: 0 0 6px; font-weight: 500; }
+  #end.win h1 { color: #fff; text-shadow: 0 0 30px rgba(255,235,180,.7); }
+  #end.lose h1 { color: #ff5b4d; text-shadow: 0 0 30px rgba(255,60,50,.4); }
+  #end .stats { font-size: 11px; color: var(--dim); line-height: 1.9; margin: 18px 0 24px; text-align: center; letter-spacing: .1em; }
+  #end .stats b { color: var(--ink); font-weight: 500; }
+  #end .btns { display: flex; gap: 12px; }
+  #end .btn { width: auto; padding: 11px 26px; font-size: 11px; margin: 0; }
+</style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="vignette"></div>
+  <div id="flash"></div>
+  <div id="dmg"></div>
+
+  <div id="swarm" class="ui">
+    <div class="label">SHIKIGAMI</div>
+    <div class="count"><span class="cur" id="sk-cur">100</span> <span class="max">/ 100</span></div>
+    <div class="bar"><i id="sk-bar" style="width:100%"></i></div>
+    <div class="corrupt" id="sk-scatter"></div>
+  </div>
+
+  <div id="boss" class="ui">
+    <div class="name">ONI</div>
+    <div class="bar"><i id="boss-bar" style="width:100%"></i></div>
+    <div class="phase" id="boss-phase">PHASE 1</div>
+  </div>
+
+  <div id="controls" class="ui">
+    <div class="k"><div class="key">WASD</div><div class="act">MOVE</div></div>
+    <div class="k"><div class="key">LMB</div><div class="act">RELEASE</div></div>
+    <div class="k"><div class="key">RMB</div><div class="act">RECALL</div></div>
+    <div class="k"><div class="key">SPACE</div><div class="act">SPREAD</div></div>
+    <div class="k"><div class="key">Q</div><div class="act">GRAVITY CORE</div></div>
+    <div class="k"><div class="key">SHIFT</div><div class="act">DASH</div></div>
+  </div>
+
+  <div id="timer" class="ui"></div>
+  <div id="modetag" class="ui"></div>
+  <div id="pop" class="ui"><div class="g" id="pop-g"></div><div class="t" id="pop-t"></div></div>
+  <div id="seal"><div class="stamp"></div><div class="seal-hits"></div></div>
+  <div id="skills" class="ui">
+    <div class="sk"><div class="fill" id="cd-core"></div><div class="lab"><span class="key">SPACE</span><span class="nm">SPREAD</span></div></div>
+    <div class="sk"><div class="fill" id="cd-spider"></div><div class="lab"><span class="key">Q</span><span class="nm">GRAVITY</span></div></div>
+  </div>
+  <div id="hitcount" class="ui"></div>
+  <div id="marker" class="ui"><i></i><em id="marker-d"></em></div>
+  <div id="objective" class="ui"><b id="obj-name"></b><span id="obj-sub"></span></div>
+  <div id="banner" class="ui"></div>
+  <div id="skillname" class="ui"></div>
+
+  <div id="debugbtn">DEBUG</div>
+  <div id="debug">
+    <div class="row"><span>FPS</span><b id="d-fps">0</b></div>
+    <div class="row"><span>SHIKIGAMI</span><b id="d-total">0</b></div>
+    <div class="row"><span>ACTIVE</span><b id="d-active">0</b></div>
+    <div class="row"><span>LOOSE</span><b id="d-loose">0</b></div>
+    <div class="row"><span>SCATTERED</span><b id="d-scattered">0</b></div>
+    <div class="row"><span>AVG DIST</span><b id="d-dist">0</b></div>
+    <div class="row"><span>SWARM SPEED</span><b id="d-speed">0</b></div>
+    <div class="row"><span>STATE</span><b id="d-state">FOLLOW</b></div>
+    <div class="row"><span>TYPES</span><b id="d-extra">--</b></div>
+    <div class="row"><span>FORMATION</span><b id="d-formation">NORMAL</b></div>
+    <div class="row"><span>GRAVITY</span><b id="d-gravity">--</b></div>
+    <div class="row"><span>&nbsp;&nbsp;PULLED</span><b id="d-pulled">0</b></div>
+    <div class="row"><span>&nbsp;&nbsp;FROM WAIT</span><b id="d-fromwait">0</b></div>
+    <h4>境喰・八肢</h4>
+    <div class="row"><span>BOSS HP</span><b id="d-bhp">--</b></div>
+    <div class="row"><span>PHASE</span><b id="d-bphase">--</b></div>
+    <div class="row"><span>ACTIVE LEGS</span><b id="d-blegs">0</b></div>
+    <div class="row"><span>SEVERED</span><b id="d-bsev">0</b></div>
+    <div class="row"><span>NEXT ATTACK</span><b id="d-batk">--</b></div>
+    <div class="row"><span>CORE EXPOSED</span><b id="d-bcore">NO</b></div>
+    <div class="row"><span>PERFECT DODGES</span><b id="d-bdodge">0</b></div>
+    <button class="btn" id="d-boss">BOSS SANDBOX</button>
+    <h4>PARAMETERS</h4>
+    <h4>BOID PARAMETERS</h4>
+    <div id="tuner"></div>
+    <button class="btn" id="d-reset">RESET DEFAULTS</button>
+    <button class="btn" id="d-export">EXPORT CURRENT SESSION</button>
+    <button class="btn" id="d-export-all">EXPORT ALL SESSIONS</button>
+  </div>
+
+  <div id="end">
+    <h1 id="end-title">VICTORY</h1>
+    <div class="stats" id="end-stats"></div>
+    <div class="btns">
+      <button class="btn" id="end-retry">RETRY</button>
+      <button class="btn" id="end-menu">MENU</button>
+      <button class="btn" id="end-export">EXPORT CURRENT SESSION</button>
+    </div>
+  </div>
+
+  <div id="start">
+    <div class="title">SHIKIGAMI FLOW</div>
+    <div class="sub">PROTOTYPE V8</div>
+    <div class="pitch">Grow a living swarm, throw it into the battlefield, shape the situation<br>with a few deliberate skills, then call the entire flock back through your enemies.</div>
+    <div class="grouphead">SWARM GRAMMAR &nbsp;—&nbsp; 放つ · 広げる · 集める · 呼ぶ</div>
+    <div class="slots" id="slots"></div>
+    <div class="modes">
+      <button class="btn big" id="start-btn" autofocus>PLAY ARENA</button>
+      <button class="btn small" id="start-kyoto">Kyoto Prototype &nbsp;·&nbsp; experimental</button>
+    </div>
+    <div class="foot">WASD MOVE &nbsp;·&nbsp; ` DEBUG</div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

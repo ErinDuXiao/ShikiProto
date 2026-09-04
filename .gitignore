@@ -1,0 +1,4 @@
+node_modules
+dist
+# local tooling state (dev-server port, scratch config)
+.claude
