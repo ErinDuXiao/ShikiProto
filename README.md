@@ -82,9 +82,30 @@ player doing the thing:
 > `timeToFirstGravitySetup` still `null` — the player passed the lesson on
 > placement tools without ever pressing one. Both now require the ability.
 
-First `PLAY ARENA` goes through it once (`localStorage`), after that straight to
-the arena. `Tutorial` in the menu replays it, `SKIP TUTORIAL` leaves at any time,
-`RESET TUTORIAL` is in the debug panel.
+### When it runs
+
+`PLAY ARENA` is the only button most people press, so the tutorial comes to them
+rather than sitting beside it. It runs automatically when either is true:
+
+- the browser has no record of the player finishing it, **or**
+- they finished a version older than `TUTORIAL_REVISION` in `src/systems/tutorial.ts`
+
+Completion stores an **ISO timestamp** under `shikigami_tutorial_playedAt`, so
+revising a lesson and bumping that constant reaches everyone who already played
+— once. Bump it when the steps or their wording change, and leave it alone
+otherwise, or every player repeats the tutorial for nothing.
+
+| stored value | runs? |
+| --- | --- |
+| nothing | yes |
+| `true` (the pre-timestamp build) | yes, treated as seen-but-older |
+| a date before `TUTORIAL_REVISION` | yes |
+| a date after it | no |
+| anything unparseable | yes |
+
+`Tutorial` in the menu replays it, `SKIP TUTORIAL` leaves at any time (and still
+records the timestamp, so skipping is not punished with a loop), `RESET TUTORIAL`
+is in the debug panel.
 
 Measured, autopiloted: **23 s** and all 8 steps, with the recall kill landing
 inside the recall step. A human reading each line will be nearer the 60–90 s the

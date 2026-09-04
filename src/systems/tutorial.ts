@@ -262,19 +262,51 @@ export const VIEWS: Record<StepId, StepView> = {
   final: { title: 'Use what you have learned', key: '', action: '' },
 };
 
-const STORAGE_KEY = 'shikigami_tutorial_done';
+/**
+ * When the tutorial itself last changed.
+ *
+ * A player is sent through it again whenever they have not seen it since this
+ * date, so revising a lesson actually reaches the people who already played.
+ * Bump this whenever the steps or their wording change; leave it alone for
+ * unrelated work, or everyone repeats the tutorial for nothing.
+ */
+export const TUTORIAL_REVISION = '2026-09-04T00:00:00.000Z';
 
-export function tutorialCompleted(): boolean {
+const PLAYED_KEY = 'shikigami_tutorial_playedAt';
+/** pre-revision builds stored a bare 'true' here */
+const LEGACY_KEY = 'shikigami_tutorial_done';
+
+/** ISO timestamp of the last completed run, or null if there has never been one */
+export function tutorialPlayedAt(): string | null {
   try {
-    return localStorage.getItem(STORAGE_KEY) === 'true';
+    const at = localStorage.getItem(PLAYED_KEY);
+    if (at) return at;
+    // Someone who finished the old tutorial has a 'true' and no date. Treat
+    // that as "seen, but before the current revision" so they get the updated
+    // one exactly once rather than being counted as never having played.
+    if (localStorage.getItem(LEGACY_KEY) === 'true') return '1970-01-01T00:00:00.000Z';
+    return null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+/**
+ * True when the player has never finished the tutorial, or finished a version
+ * of it older than the current one.
+ */
+export function tutorialDue(): boolean {
+  const at = tutorialPlayedAt();
+  if (!at) return true;
+  const seen = Date.parse(at);
+  if (Number.isNaN(seen)) return true;
+  return seen < Date.parse(TUTORIAL_REVISION);
 }
 
 export function markTutorialCompleted() {
   try {
-    localStorage.setItem(STORAGE_KEY, 'true');
+    localStorage.setItem(PLAYED_KEY, new Date().toISOString());
+    localStorage.removeItem(LEGACY_KEY);
   } catch {
     /* private window: the tutorial simply shows again */
   }
@@ -282,7 +314,8 @@ export function markTutorialCompleted() {
 
 export function resetTutorial() {
   try {
-    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(PLAYED_KEY);
+    localStorage.removeItem(LEGACY_KEY);
   } catch {
     /* nothing to do */
   }

@@ -5,7 +5,7 @@ import { DebugPanel } from './ui/debugPanel';
 import { Sfx } from './core/audio';
 import { PlayLogger } from './log/playLogger';
 import { CONTROLS, type GameMode } from './core/runConfig';
-import { resetTutorial, tutorialCompleted } from './systems/tutorial';
+import { resetTutorial, tutorialDue, tutorialPlayedAt } from './systems/tutorial';
 
 const app = document.getElementById('app') as HTMLDivElement;
 
@@ -60,13 +60,15 @@ for (const s of CONTROLS) {
 const arenaBtn = document.getElementById('start-btn') as HTMLButtonElement;
 
 /**
- * PLAY ARENA sends a first-time player through the tutorial once, then always
- * straight into the arena (spec 18). The tutorial hands over to the arena when
- * it finishes, so this is the only place that decision is made.
+ * PLAY ARENA is the only button most people will press, so the tutorial has to
+ * come to them rather than sit beside it. It runs automatically whenever the
+ * player has never finished it, or finished a version older than the current
+ * one, and goes straight to the arena otherwise. The tutorial hands over to
+ * the arena when it ends, so this is the only place that decision is made.
  */
 function playArena() {
   sfx.unlock();
-  startRun(tutorialCompleted() ? 'arena' : 'tutorial');
+  startRun(tutorialDue() ? 'tutorial' : 'arena');
 }
 
 arenaBtn.addEventListener('click', playArena);
@@ -118,6 +120,8 @@ requestAnimationFrame(frame);
   spawnOni: () => game?.spawnArenaOni(),
   tutorial: () => startRun('tutorial'),
   resetTutorial,
+  tutorialDue,
+  tutorialPlayedAt,
   hud,
   kyoto: () => startRun('kyoto'),
   menu: toStartScreen,
