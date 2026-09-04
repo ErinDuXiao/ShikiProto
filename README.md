@@ -1,4 +1,4 @@
-# SHIKIGAMI FLOW — Prototype v8
+# SHIKIGAMI FLOW — Prototype v9
 
 Swarm Techniques / Scatter & Recover / Combat Rhythm.
 
@@ -51,78 +51,89 @@ which is how a recall line gets built.
 
 ---
 
-## 境喰・八肢 — the arena boss
+## Tutorial
 
-A hundred shikigami erase a crowd of yokai without the player ever moving. That
-power fantasy is the point and is untouched — **one recall still deletes 26 of a
-34-strong pack** (measured). What was missing was any reason for the *player* to
-play. This is that reason, and it is bolted on beside the waves rather than
-replacing them.
+The controls are not the hard part. The hard part is that **left click is not
+attack** — the flock has to be on the far side of something before the pull is
+worth anything. That cannot be read, only done, so the tutorial makes the player
+do it:
 
 ```
-sweep telegraph (0.9s)  →  DASH  →  the limb is stuck out, cracked open (1.5s)
-  →  put the flock past it  →  RECALL through it  →  the limb comes off
-  →  the arena opens up  →  enough limbs down  →  the core is bare
-  →  GRAVITY behind it  →  DASH to the far side  →  100-shikigami RECALL
+release  →  walk past the enemy  →  recall
 ```
 
-No new player verb. Every answer is Dash, Release, Spread, Gravity and Recall.
+Eight steps, one line of text and one control named at a time. The permanent
+control strip and the cooldown pips are hidden while it runs; the pips come back
+at the step that teaches them.
 
-### The split
+**Every step is gated on the action it teaches, not on the field being clear.**
+That distinction mattered — the first build let three steps pass without the
+player doing the thing:
 
-| | job | how it is handled |
-| --- | --- | --- |
-| yokai | power fantasy | the flock deletes them; **unchanged** |
-| 境喰・八肢 | action skill | aims at the onmyoji; only a dash answers it |
+> The **recall** step completed instantly, because each step cleared the arena
+> and that wiped the dummy the player was supposed to pull through. It now
+> requires a recall that actually killed something (spec 24/43).
+>
+> The **dash** step read `player.dashCount > 0`, which is cumulative for the
+> run, so a dash used earlier satisfied it before it began. Baselines are now
+> captured on entry.
+>
+> The **gravity** and **spread** steps completed by recalling repeatedly, with
+> `timeToFirstGravitySetup` still `null` — the player passed the lesson on
+> placement tools without ever pressing one. Both now require the ability.
 
-### How it is built
+First `PLAY ARENA` goes through it once (`localStorage`), after that straight to
+the arena. `Tutorial` in the menu replays it, `SKIP TUTORIAL` leaves at any time,
+`RESET TUTORIAL` is in the debug panel.
 
-Limbs and core are `EnemyBase` subclasses, so the existing swept-segment
-collision, damage aggregation and recall reporting cut a limb with exactly the
-code that cuts a yokai. What differs is per-part:
+Measured, autopiloted: **23 s** and all 8 steps, with the recall kill landing
+inside the recall step. A human reading each line will be nearer the 60–90 s the
+brief asks for.
 
-- **Limbs** are armoured at `0.3×` except in the window a dodge opens, where they
-  take full damage — and `recallBonus 1.8×` on top, so a limb is emphatically the
-  pull's job, not chip damage.
-- **The core** takes `0×` while closed. It is not a health gate; it is shut until
-  you have taken enough of the arena back.
-- **Perfect Dodge** reads `player.dashIFrames`, a timer set *only* by dashing.
-  `invuln` was no good — taking a hit also grants it, so a Perfect Dodge would
-  have meant "you were still flashing" rather than "you dashed through it".
-- Reward for a perfect dodge is `+0.4s` of open window. No damage bonus (spec 14).
+---
 
-### Measured — one full fight
+## 鬼 — the arena Oni
 
-| | |
-| --- | --- |
-| duration | **3.3 min** (target 2.5–4) |
-| phases | 67 s / 66 s / 66 s |
-| limbs severed | 18 |
-| core windows | 7 |
-| perfect dodges | 3–16 depending on how the bot dodges |
-| trash unaffected | 26 killed by one recall |
+The multi-limbed boss is gone: `boundaryEater.ts` and `bossFight.ts` are deleted
+and every hook they had is removed. Three things they introduced were worth
+keeping and now serve the Oni — `EnemyBase.recallBonus`, `CombatSystem.onHit`,
+and `Player.dashIFrames`.
 
-> **Core HP was sized against a measurement, not a guess.** One full
-> 100-shikigami recall through the open core deals ~147 damage and a window fits
-> about two of them. The first value (2600) implied 28 such recalls — the boss
-> would have been a tank, which spec 37/47 rules out. It is 1500.
+Three attacks, chosen by range so the answer is always legible:
 
-### Two bugs found while building it
+| | range | tell | answer |
+| --- | --- | --- | --- |
+| **CHARGE** | far | ground line, body drops | dash sideways |
+| **SLAM** | mid | ring on the floor, 0.9 s | dash out of it |
+| **SWING** | close | wide arc on the floor | dash back |
 
-> **The fight deadlocked.** Cut every limb and there was nothing left to sever,
-> so the core never opened again — measured at 398 seconds with the core still at
-> 90%. Limbs now re-form a beat after being cut, which is also the right read for
-> a flowing mass.
+Every attack ends in a **recovery** state of 1.0–1.35 s where the Oni is planted
+and `recallBonus` rises to **1.4×**. The dodge is not survival — it is what buys
+the window.
 
-> **Every boss field logged as zero on a win.** The death sequence disposes the
-> boss and *then* ends the run, so `buildLog()` read the stats off a `null`. They
-> are snapshotted before disposal now.
+**Perfect Dodge** requires the dash's own i-frames to overlap the *committed*
+part of the attack. Measured: dashing at the first frame of the tell scores
+**0**; dashing on time scores **12**.
 
-### Developer
+> Two things the measurements caught. **Swing never fired** — the Oni stopped
+> drifting at range 7 while the swing needed < 6.5, so one of its three attacks
+> was unreachable. And the hit counters incremented on attempts rather than
+> connections, so `EnemyWorld.hitPlayer` now returns whether it actually landed.
 
-`BOSS SANDBOX` in the debug panel (or `SHIKIGAMI.bossSandbox()`) drops straight
-in with 100 shikigami, the boss and a little trash. The panel also shows BOSS HP,
-PHASE, ACTIVE LEGS, SEVERED, NEXT ATTACK, CORE EXPOSED and PERFECT DODGES.
+Spawns at ~3 min or 75 shikigami. Measured kill time with a perfect autopilot is
+**19 s**; a real player, taking the front guard into account, should land nearer
+the 1–2 min the brief asks for.
+
+**The power fantasy is untouched** — one recall at 100 shikigami still erases
+**25 of 32** yokai. No enemy HP was raised.
+
+---
+
+## Guidance in the arena
+
+The full control list sits bottom-right for the first 45 s and then fades. After
+that, one quiet nudge per unused ability (`Q` if gravity has never been cast
+while a crowd is up, and so on) — once each, never repeated.
 
 ---
 
@@ -133,11 +144,11 @@ reachable so any tuning question can be answered the way it always was (spec 47)
 
 ```
 [        PLAY ARENA        ]     the mode under test
+          Tutorial
    Kyoto Prototype · experimental
 ```
 
-Arena is primary, takes default focus and starts on Enter. Kyoto is kept, at
-roughly half the visual weight.
+Arena is primary, takes default focus and starts on Enter.
 
 `SHIKIGAMI.kyoto()` / `SHIKIGAMI.arena()` do the same from the console.
 
@@ -664,6 +675,15 @@ src/
   ui/hud.ts, ui/debugPanel.ts
   log/playLogger.ts
 ```
+
+---
+
+## Walking pace in Kyoto
+
+Out of combat the onmyoji walks at **1.3×** (measured 16.7 u/s against 13.0 in a
+fight). It eases up over about a second when a fight ends and snaps straight back
+the moment one starts — dawdling out of an encounter is fine, being slow the
+instant one begins is not.
 
 ---
 

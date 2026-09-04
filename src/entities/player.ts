@@ -4,6 +4,12 @@ import type { Input } from '../core/input';
 
 const _clamped = { x: 0, z: 0 };
 const MOVE_SPEED = 13;
+/**
+ * Kyoto walks between encounters at a higher speed (spec 47). Combat snaps
+ * straight back to 100%; the ramp only runs the other way, so leaving a fight
+ * never feels like the game sped up under you.
+ */
+const EXPLORE_SPEED_MUL = 1.3;
 const ACCEL = 90;
 const DASH_SPEED = 46;
 const DASH_TIME = 0.16;
@@ -32,6 +38,8 @@ export class Player {
    * mean "you dashed through it", not "you were still flashing" (spec 14).
    */
   dashIFrames = 0;
+  /** 0 = combat pace, 1 = exploration pace */
+  private explore = 0;
   dashTimer = 0;
   dashCooldown = 0;
   dashCount = 0;
@@ -106,6 +114,16 @@ export class Player {
     return this.invuln > 0;
   }
 
+  /**
+   * Ease toward exploration pace, or snap back to combat pace. Asymmetric on
+   * purpose: dawdling out of a fight is fine, being slow the instant one starts
+   * is not (spec 47).
+   */
+  setExploring(on: boolean, dt: number) {
+    if (!on) this.explore = 0;
+    else this.explore += (1 - this.explore) * (1 - Math.exp(-1.6 * dt));
+  }
+
   /** true only while the dash's own i-frames are up */
   get dashInvulnerable(): boolean {
     return this.dashIFrames > 0;
@@ -137,7 +155,8 @@ export class Player {
       this.dashTimer -= dt;
       this.vel.copy(this.dashDir).multiplyScalar(DASH_SPEED);
     } else {
-      const target = move.clone().multiplyScalar(MOVE_SPEED);
+      const speed = MOVE_SPEED * (1 + (EXPLORE_SPEED_MUL - 1) * this.explore);
+      const target = move.clone().multiplyScalar(speed);
       const k = 1 - Math.exp(-(ACCEL / MOVE_SPEED) * dt);
       this.vel.x += (target.x - this.vel.x) * k;
       this.vel.z += (target.z - this.vel.z) * k;

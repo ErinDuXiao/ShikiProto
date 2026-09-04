@@ -10,14 +10,13 @@ import { Player } from './entities/player';
 import { ShikigamiManager } from './entities/shikigami';
 import { EnemyBase, Yokai, resetEnemyIds, type EnemyWorld } from './entities/enemy';
 import { Oni } from './entities/boss';
-import { BossFight } from './systems/bossFight';
-import type { BossLeg } from './entities/boundaryEater';
 import { GravityCore } from './entities/gravityCore';
 import { CombatSystem } from './systems/combat';
 import { RecallSystem } from './systems/recallSystem';
 import { PickupSystem } from './systems/pickups';
 import { WaveDirector } from './systems/waveDirector';
 import { FormulaTracker } from './systems/formula';
+import { Tutorial, markTutorialCompleted, resetTutorial, type StepId } from './systems/tutorial';
 import { InkAccent } from './vfx/inkAccent';
 import { KyotoWorld } from './world/kyotoWorld';
 import { Journey } from './world/journey';
@@ -83,9 +82,15 @@ export class Game {
   private omens: Omen[] = [];
   private barrier: Barrier | null = null;
   private locationBanner = 0;
-  // --- 境喰・八肢, the arena boss (v8)
-  private eater: BossFight | null = null;
-  private eaterSpawnedAt = -1;
+  // --- the arena Oni (v9). Trash stays the power fantasy; this is the part
+  // that asks the player to move (spec 3/6).
+  private tutorial: Tutorial | null = null;
+  private tutorialKills = 0;
+  private oniSpawned = false;
+  private oniStart = 0;
+  private oniRecallHits = 0;
+  private oniRecallDamage = 0;
+  private bossDamageAtSpawn = 0;
   private gravityCd = 0;
   private spreadCd = 0;
   private recallStartedInOrbit = false;
@@ -136,6 +141,7 @@ export class Game {
 
     this.player.onDash = () => {
       this.logger.dashCount++;
+      this.tutorial?.noteDash();
       this.swarm.notifyDash();
       this.fx.ring(this.player.pos.x, this.player.pos.z, 0.5, 4.5, 0.28, 0x9fd8ff);
       this.sfx.dash();
@@ -147,7 +153,7 @@ export class Game {
     };
     this.swarm.onLost = (x, z) => this.fx.burst(x, 0.6, z, 4, 0x3a3a44, 2, 0.5);
     this.combat.onKill = (e) => this.handleKill(e);
-    this.combat.onHit = (e, dmg, isRecall) => this.noteEaterHit(e, dmg, isRecall);
+    this.combat.onHit = (e, dmg, isRecall) => this.noteBossHit(e, dmg, isRecall);
 
     this.pickups.onCollect = (value, kind) => {
       if (kind === 'orbit') {
@@ -172,11 +178,7 @@ export class Game {
       this.hud.hideBanner();
     };
     this.waves.onMidBoss = () => this.spawnOni(true);
-    // the timeline Oni stands down while 境喰・八肢 is on the field: two bosses
-    // at once is not what this prototype is measuring
-    this.waves.onBoss = () => {
-      if (!this.eater) this.spawnOni(false);
-    };
+    this.waves.onBoss = () => this.spawnOni(false);
 
     this.world = {
       playerPos: this.player.pos,
@@ -192,17 +194,148 @@ export class Game {
     this.hud.setSwarm(this.swarm.activeCount, 0, Math.round(v5.maxShikigami));
     // after hud.reset(), which clears the objective line
     if (this.kyotoMode) this.setupJourney();
-    this.debug.onBossSandbox = () => this.bossSandbox();
+    this.hud.setControlsVisible(!this.tutorialMode);
+    this.hud.setSkillPipsVisible(!this.tutorialMode);
+    if (this.tutorialMode) this.setupTutorial();
+    this.debug.onBossSandbox = () => this.spawnArenaOni();
+    this.debug.onResetTutorial = () => resetTutorial();
     this.debug.onExportCurrent = () => this.exportCurrent();
     this.debug.onExportAll = () => PlayLogger.downloadAll();
-    this.hud.showBanner(
-      this.kyotoMode ? '境が、またひとつ破れた。' : 'RELEASE · MOVE · RECALL',
-      this.kyotoMode ? 4.0 : 3.0,
-    );
+    if (this.mode === 'arena') this.hud.showReminder(45);
+    if (!this.tutorialMode) {
+      this.hud.showBanner(
+        this.kyotoMode ? '境が、またひとつ破れた。' : 'Release → Position → Recall',
+        this.kyotoMode ? 4.0 : 5.0,
+      );
+    }
   }
 
   get kyotoMode(): boolean {
     return this.mode === 'kyoto';
+  }
+
+  get tutorialMode(): boolean {
+    return this.mode === 'tutorial';
+  }
+
+  // ------------------------------------------------------------- tutorial
+
+  private setupTutorial() {
+    const t = new Tutorial();
+    t.onSetup = (step) => this.buildTutorialStep(step);
+    t.onStepChange = (step, view) => {
+      this.hud.setLesson(view.title, view.key, view.action);
+      // the cooldown pips only appear once their abilities have been taught
+      if (step === 'gravity') this.hud.setSkillPipsVisible(true);
+      if (step !== 'move') this.sfx.send();
+    };
+    t.onComplete = () => {
+      markTutorialCompleted();
+      this.hud.setLesson('', '', '');
+      this.hud.setSkipVisible(false);
+      this.hud.showBanner('The shikigami are your weapon.', 3.0);
+      this.tutorialOutro = 3.2;
+    };
+    this.hud.setSkipVisible(true, () => {
+      t.skip();
+      markTutorialCompleted();
+      this.hud.setLesson('', '', '');
+      this.hud.setSkipVisible(false);
+      this.endGame(true);
+    });
+    this.tutorial = t;
+    t.begin(this.player.pos);
+  }
+
+  private tutorialOutro = -1;
+
+  /**
+   * Each step builds the smallest situation that makes its lesson true. The
+   * enemies here are ordinary yokai with their HP left alone -- the tutorial
+   * teaches geometry, not a special-cased scenario.
+   */
+  private buildTutorialStep(step: StepId) {
+    // The recall step deliberately inherits the dummy the previous step
+    // placed. Clearing the field on every step wiped the very enemy the
+    // player was being asked to pull through.
+    if (step !== 'recall') {
+      for (const e of this.enemies) e.alive = false;
+      this.reapEnemies();
+    }
+    const p = this.player.pos;
+
+    switch (step) {
+      case 'move':
+        break;
+      case 'release':
+        break;
+      case 'between': {
+        // one dummy dropped between the player and where the flock went
+        const c = this.swarm.swarmCenter;
+        const dx = c.x - p.x;
+        const dz = c.z - p.z;
+        const d = Math.hypot(dx, dz) || 1;
+        this.spawnDummy(p.x + (dx / d) * 9, p.z + (dz / d) * 9);
+        break;
+      }
+      case 'recall':
+        break;
+      case 'dash':
+        // the real Oni, so the tell the player learns here is the one they
+        // will meet in the arena (spec 25)
+        this.spawnOni(false);
+        break;
+      case 'gravity':
+        for (let i = 0; i < 4; i++) {
+          const a = -0.5 + i * 0.33;
+          this.spawnDummy(p.x + Math.cos(a) * 17, p.z + Math.sin(a) * 17);
+        }
+        break;
+      case 'spread':
+        for (let i = 0; i < 6; i++) {
+          const a = (i / 6) * Math.PI * 2;
+          this.spawnDummy(p.x + Math.cos(a) * 7.5, p.z + Math.sin(a) * 7.5);
+        }
+        break;
+      case 'final':
+        for (let i = 0; i < 12; i++) {
+          const a = Math.random() * Math.PI * 2;
+          const r = 14 + Math.random() * 10;
+          this.spawnDummy(p.x + Math.cos(a) * r, p.z + Math.sin(a) * r);
+        }
+        break;
+    }
+  }
+
+  /** a plain yokai, unmodified; the tutorial never softens the enemy */
+  private spawnDummy(x: number, z: number) {
+    this.spawnYokai(x, z, false);
+  }
+
+  private updateTutorial(dt: number) {
+    const t = this.tutorial;
+    if (!t) return;
+
+    if (this.tutorialOutro > 0) {
+      this.tutorialOutro -= dt;
+      if (this.tutorialOutro <= 0) {
+        this.tutorialOutro = -1;
+        this.endGame(true);
+      }
+      return;
+    }
+    if (t.done) return;
+
+    // "the enemy is between me and my flock" -- the one idea being taught
+    const c = this.swarm.swarmCenter;
+    let behind = false;
+    for (const e of this.enemies) {
+      if (!e.alive) continue;
+      const d = distToSegment(e.pos.x, e.pos.z, this.player.pos.x, this.player.pos.z, c.x, c.z);
+      if (d < e.radius + 3.5) behind = true;
+    }
+    t.update(dt, this.player.pos, this.aliveCount(), behind, this.player.dashCount);
+    if (t.step === 'release') t.noteRelease(this.swarm.looseCount);
   }
 
   // ----------------------------------------------------------- Kyoto wiring
@@ -356,6 +489,8 @@ export class Game {
     this.input.updateAim(this.rig.camera);
     if (!this.ended && this.finishTimer < 0) this.handleActions();
 
+    // Kyoto only: walk faster when nothing is trying to kill you (spec 47)
+    this.player.setExploring(this.journey ? this.journey.phase !== 'combat' : false, dt);
     this.player.update(dt, this.input);
     if (!this.movedOnce && (Math.abs(this.player.vel.x) > 1 || Math.abs(this.player.vel.z) > 1)) {
       this.movedOnce = true;
@@ -389,12 +524,13 @@ export class Game {
     }
     else this.combat.flush(dt);
 
-    this.updateEater(dt);
-    this.updateEaterDeath(dt);
     this.ink.update(dt, this.swarm);
     this.reapEnemies();
     if (!this.ended && this.finishTimer < 0) {
-      if (this.journey) {
+      if (this.tutorialMode) {
+        // the tutorial spawns exactly what each step needs; the wave director
+        // would fight it for control of the arena
+      } else if (this.journey) {
         // Kyoto drives its own pressure: the wave director is replaced by the
         // location the player chose to walk into (spec 1).
         this.journey.update(dt, this.time, this.player.pos, this.aliveCount());
@@ -428,6 +564,11 @@ export class Game {
           this.sfx.bigHit(40);
         }
       }
+    }
+    if (this.tutorialMode) this.updateTutorial(dt);
+    else {
+      this.updateOni(dt);
+      this.updateHints(dt);
     }
     this.updateFinish(dt);
 
@@ -487,17 +628,7 @@ export class Game {
       gravityActive: this.swarm.attractor !== null,
       pulled: this.swarm.heldByCore,
       pulledFromWait: this.swarm.heldFromWait,
-      boss: this.eater
-        ? {
-            hp: Math.round(this.eater.core.hp) + ' / ' + this.eater.core.maxHp,
-            phase: this.eater.phase,
-            activeLegs: this.eater.activeLegs,
-            severed: this.eater.legsSevered,
-            nextAttack: this.eater.nextAttack,
-            coreExposed: this.eater.coreExposed,
-            perfectDodges: this.eater.perfectDodges,
-          }
-        : null,
+      boss: this.oniStats(),
       extra:
         '騰蛇 ' + this.swarm.countOfType(SType.TENGJA) +
         ' · CORE ' + this.swarm.heldByCore +
@@ -581,248 +712,145 @@ export class Game {
     mat.opacity = (0.075 + flash * 0.3) * Math.min(1, this.swarm.orbitTimer / 0.5);
   }
 
-  // ------------------------------------------------------------- arena boss
+  /**
+   * One quiet nudge per ability, and only when the situation calls for it
+   * (spec 37). Never repeated -- a reminder that nags is worse than no
+   * reminder.
+   */
+  private hintsShown = new Set<string>();
+  private hintCd = 0;
+
+  private updateHints(dt: number) {
+    if (this.mode !== 'arena' || this.ended) return;
+    this.hintCd -= dt;
+    if (this.hintCd > 0 || this.time < 60) return;
+    const busy = this.aliveCount() >= 5;
+    const check: Array<[string, boolean, string]> = [
+      ['gravity', this.logger.gravityUses === 0 && busy, '<b>Q</b> gathers your shikigami somewhere else'],
+      ['spread', this.logger.spreadUses === 0 && busy, '<b>SPACE</b> opens the flock into a wide surface'],
+      ['dash', this.logger.dashCount === 0, '<b>SHIFT</b> dashes you out of the way'],
+    ];
+    for (const [id, want, text] of check) {
+      if (!want || this.hintsShown.has(id)) continue;
+      this.hintsShown.add(id);
+      this.hud.showHint(text);
+      this.hintCd = 25;
+      return;
+    }
+  }
+
+  // ------------------------------------------------------------- arena Oni
 
   /**
-   * The trash waves stay exactly as they are; this is bolted on beside them so
-   * the power fantasy is untouched and the difficulty comes from something that
-   * aims at the player instead (spec 2/3).
+   * Spawn condition and Perfect Dodge (spec 10/14).
+   *
+   * The dodge is deliberately generous about position and strict about timing:
+   * you must be inside the dash's own i-frames while the attack is committed.
+   * Reward is a longer opening, never damage.
    */
-  private updateEater(dt: number) {
+  private updateOni(dt: number) {
+    void dt;
     if (this.mode !== 'arena' || this.ended || this.finishTimer >= 0) return;
 
-    if (!this.eater) {
-      // whichever comes first: about three and a half minutes, or a flock big
-      // enough that the player has stopped needing to dodge (spec 9)
-      const due = this.time > 205 || this.swarm.activeCount >= 75;
-      if (due && this.eaterSpawnedAt < 0) this.spawnEater();
+    if (!this.oniSpawned) {
+      // whichever comes first: a few minutes, or a flock big enough that the
+      // player has stopped needing to move (spec 14)
+      if (this.time > 195 || this.swarm.activeCount >= 75) this.spawnArenaOni();
       return;
     }
 
-    const e = this.eater;
-    e.update(dt, this.player.pos, this.bossProbe());
+    const b = this.boss;
+    if (!b || !b.alive) return;
 
-    // Perfect Dodge: a sweep that missed while the dash i-frames were up. No
-    // damage bonus -- the reward is a longer opening (spec 14).
-    const t = e.threat;
-    if (t && t.state === 'sweeping' && this.player.dashInvulnerable) {
-      const d = Math.hypot(this.player.pos.x - t.pos.x, this.player.pos.z - t.pos.z);
-      if (d < t.radius + 5) {
-        e.registerDodge(t);
-        if (!this.perfectFlash) {
-          this.perfectFlash = true;
-          this.fx.stop(0.05);
-          this.fx.ring(this.player.pos.x, this.player.pos.z, 0.5, 6, 0.3, 0xffe6a8);
-          this.sfx.seal();
-          this.hud.showSkill('見切り  PERFECT');
-        }
-      }
-    } else if (!t || t.state !== 'sweeping') {
-      this.perfectFlash = false;
-    }
-
-    if (e.defeated && this.eaterDeath < 0) this.beginEaterDeath();
-  }
-
-  private eaterDeath = -1;
-
-  /**
-   * It does not explode. The black body goes the way ink goes in water: the
-   * limbs first, then the core, and then the arena is simply quiet (spec 31/32).
-   */
-  private beginEaterDeath() {
-    const e = this.eater;
-    if (!e) return;
-    this.eaterDeath = 3.2;
-    this.waves.breathe(4);
-    this.fx.stop(0.1);
-    this.fx.shake(1.2);
-    this.fx.screenFlash(0.3);
-    this.sfx.seal();
-    this.hud.showBanner('鎮', 2.4);
-    for (const l of e.legs) {
-      if (!l.alive) continue;
-      l.alive = false;
-      this.fx.burst(l.pos.x, 2.2, l.pos.z, 40, 0x14141c, 10, 1.1);
-    }
-    this.logger.bossDefeated = true;
-    this.logger.bossFightDuration = round2(e.elapsed);
-  }
-
-  private updateEaterDeath(dt: number) {
-    if (this.eaterDeath < 0) return;
-    const e = this.eater;
-    this.eaterDeath -= dt;
-    if (e) {
-      const k = Math.max(0, this.eaterDeath / 3.2);
-      e.core.group.scale.setScalar(0.05 + k * 0.95);
-      e.core.group.rotation.y += dt * 0.8;
-      if (Math.random() < dt * 8) {
-        this.fx.burst(e.core.pos.x, 5 + Math.random() * 5, e.core.pos.z, 6, 0x2a1a24, 5, 1.0);
-      }
-    }
-    if (this.eaterDeath <= 0) {
-      this.eaterDeath = -1;
-      this.disposeEater();
-      if (!this.ended) this.endGame(true);
+    if (b.swinging && this.player.dashInvulnerable && !b.perfectThisAttack) {
+      const d = Math.hypot(this.player.pos.x - b.pos.x, this.player.pos.z - b.pos.z);
+      // close enough that it was a real dodge and not just standing away
+      if (d < 11) b.notePerfectDodge();
     }
   }
 
-  private disposeEater() {
-    const e = this.eater;
-    if (!e) return;
-    // Snapshot before it goes. The death sequence disposes the boss and only
-    // then ends the run, so reading these off `this.eater` at buildLog time
-    // returned zeroes for every boss field in a winning run.
-    this.lastBossLog = this.bossLog();
-    const parts = new Set<number>(e.parts.map((p) => p.id));
-    for (let i = this.enemies.length - 1; i >= 0; i--) {
-      if (parts.has(this.enemies[i].id)) this.enemies.splice(i, 1);
-    }
-    for (const l of e.legs) this.combat.forget(l.id);
-    this.combat.forget(e.core.id);
-    e.dispose();
-    this.eater = null;
-  }
-
-  private perfectFlash = false;
-  /** per-recall tallies against the boss, flushed when the recall resolves */
-  private coreRecallHits = 0;
-  private coreRecallDamage = 0;
-  private legsHitThisRecall = new Set<number>();
-
-  private noteEaterHit(e: EnemyBase, dmg: number, isRecall: boolean) {
-    if (!this.eater || !e.eaterPart) return;
-    if (e === this.eater.core) {
-      // a hit on the closed shell does nothing; counting it would inflate the
-      // core-recall metric with contacts that never landed
-      if (isRecall && dmg > 0) {
-        this.coreRecallHits++;
-        this.coreRecallDamage += dmg;
-      }
-      return;
-    }
-    const leg = e as BossLeg;
-    if (isRecall) {
-      leg.hitsSinceExposed++;
-      this.legsHitThisRecall.add(leg.legId);
-    }
-  }
-
-  /**
-   * Spec 18: a pull that catches two limbs at once is the thing worth
-   * discovering, so it gets its own beat rather than just twice the numbers.
-   */
-  private flushEaterRecall() {
-    const e = this.eater;
-    if (!e) return;
-    if (this.legsHitThisRecall.size >= 2) {
-      this.fx.stop(0.06);
-      this.fx.shake(0.55);
-      this.fx.screenFlash(0.1);
-      this.sfx.bigHit(50);
-      this.hud.showSkill('双肢  ' + this.legsHitThisRecall.size + ' LEGS');
-    }
-    if (this.coreRecallHits > 0) {
-      e.noteCoreRecall(
-        this.coreRecallHits,
-        this.coreRecallDamage,
-        this.swarm.activeCount,
-        this.time - this.formula.lastGravity <= 5,
-      );
-      // the core taking a full flock is the payoff the whole fight builds to
-      this.fx.stop(0.09);
-      this.fx.shake(1.0);
-      this.fx.screenFlash(0.22);
-      this.fx.ring(e.core.pos.x, e.core.pos.z, 1, 30, 0.8, 0xffffff);
-      this.sfx.seal();
-    }
-    this.coreRecallHits = 0;
-    this.coreRecallDamage = 0;
-    this.legsHitThisRecall.clear();
-  }
-
-  private bossProbe() {
-    return {
-      recallCount: this.logger.recallCount,
-      maxRecallHits: this.combat.totals.largestRecallShikigamiCount,
-      damageTaken: this.logger.damageTaken,
-      shikigami: this.swarm.activeCount,
-    };
-  }
-
-  /** Debug / sandbox entry point too (spec 50). */
-  spawnEater() {
-    if (this.eater) return;
-    // Far enough that it arrives rather than appearing on top of you, close
-    // enough to stay in frame: this camera only shows about 45 units ahead, and
-    // at 26 the body sat half off the top edge.
-    const a = Math.atan2(this.player.pos.z, this.player.pos.x) + Math.PI;
-    const x = THREE.MathUtils.clamp(this.player.pos.x + Math.cos(a) * 19, -22, 22);
-    const z = THREE.MathUtils.clamp(this.player.pos.z + Math.sin(a) * 19, -22, 22);
-    const e = new BossFight(this.scene, x, z);
-    e.probe = () => this.bossProbe();
-    e.onSpawnTrash = (n) => {
-      for (let i = 0; i < n; i++) {
-        const t = Math.random() * Math.PI * 2;
-        this.spawnYokai(Math.cos(t) * 34, Math.sin(t) * 34, false);
-      }
-    };
-    e.onPhase = (p) => {
-      this.hud.showBanner('第' + p + '相', 1.8);
-      this.fx.shake(0.6);
-      this.sfx.bigHit(30);
-    };
-    e.onLegSevered = (leg) => this.severLeg(leg);
-    // limbs come and go during the fight, so the hittable list follows them
-    e.onLegGrown = (leg) => this.enemies.push(leg);
-    e.onLegRemoved = (leg) => {
-      const i = this.enemies.indexOf(leg);
-      if (i >= 0) this.enemies.splice(i, 1);
-      this.combat.forget(leg.id);
-    };
-    e.onCoreOpen = () => {
-      this.hud.showBanner('核 露出', 1.6);
-      this.fx.screenFlash(0.12);
-      this.fx.ring(e.core.pos.x, e.core.pos.z, 2, 26, 0.7, 0xff8866);
-      this.sfx.recallStart();
-    };
-    e.onCoreClose = () => this.hud.hideBanner();
-    e.onTelegraph = () => this.sfx.hit(0.2);
-    this.eater = e;
-    this.eaterSpawnedAt = this.time;
+  /** Debug / tutorial entry point too. */
+  spawnArenaOni() {
+    if (this.oniSpawned) return;
+    this.oniSpawned = true;
+    this.oniStart = this.time;
+    this.bossDamageAtSpawn = this.logger.damageTaken;
     this.logger.bossEncountered = true;
-    this.logger.bossDamageTakenAtSpawn = this.logger.damageTaken;
-
-    for (const part of e.parts) this.enemies.push(part);
-    // a moment of quiet so the arrival reads (spec 10)
-    this.waves.breathe(3);
-    this.hud.showBanner('境喰・八肢', 2.6);
-    this.fx.screenFlash(0.2);
-    this.fx.shake(1.0);
-    this.sfx.defeat();
-  }
-
-  /** 100 shikigami, a boss, a little trash — straight to the thing being tested. */
-  bossSandbox() {
-    if (this.mode !== 'arena' || this.ended) return;
-    this.swarm.grow(Math.max(0, 100 - this.swarm.count), this.player, 9999);
-    for (const e of this.enemies) if (!e.eaterPart) e.alive = false;
-    this.spawnEater();
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2;
-      this.spawnYokai(Math.cos(a) * 30, Math.sin(a) * 30, false);
+    this.spawnOni(false);
+    const b = this.boss;
+    if (b) {
+      b.onPerfectDodge = () => {
+        this.fx.stop(0.05);
+        this.fx.ring(this.player.pos.x, this.player.pos.z, 0.5, 6, 0.3, 0xffe6a8);
+        this.sfx.seal();
+        this.hud.showSkill('見切り  PERFECT');
+      };
+      b.onTelegraph = () => this.sfx.hit(0.22);
     }
+    this.waves.breathe(2.5);
+    this.hud.showBanner('鬼', 2.4);
+    this.fx.screenFlash(0.18);
+    this.fx.shake(0.9);
   }
 
-  private severLeg(leg: BossLeg) {
-    // ink dissolving, not gore (spec 16)
-    this.fx.stop(0.08);
-    this.fx.shake(0.8);
-    this.fx.burst(leg.pos.x, 2.4, leg.pos.z, 90, 0x14141c, 14, 0.9);
-    this.fx.ring(leg.pos.x, leg.pos.z, 1, 14, 0.6, 0x8e1420);
-    this.sfx.bigHit(40);
-    this.hud.showPop('肢 断', this.swarm.activeCount);
+  private noteBossHit(e: EnemyBase, dmg: number, isRecall: boolean) {
+    const b = this.boss;
+    if (!b || e !== b || !isRecall) return;
+    this.oniRecallHits++;
+    this.oniRecallDamage += dmg;
+  }
+
+  /** a pull landed on an Oni that was still planted: say so */
+  private flushBossRecall() {
+    const b = this.boss;
+    if (b && b.recovering && this.oniRecallHits >= 12) {
+      this.fx.stop(0.06);
+      this.fx.shake(0.5);
+      this.sfx.bigHit(this.oniRecallHits);
+    }
+    this.oniRecallHits = 0;
+    this.oniRecallDamage = 0;
+  }
+
+  private oniStats() {
+    const b = this.boss;
+    if (!b || !b.alive) return null;
+    return {
+      hp: Math.round(b.hp) + ' / ' + b.maxHp,
+      phase: b.phase,
+      state: b.state.toUpperCase(),
+      nextAttack: b.nextAttack,
+      recovering: b.recovering,
+      perfectDodges: b.perfectDodges,
+    };
+  }
+
+  private bossLog() {
+    const b = this.boss;
+    return {
+      damageTaken: round2(this.logger.damageTaken - this.bossDamageAtSpawn),
+      perfectDodges: b?.perfectDodges ?? this.lastOniPerfect,
+      slamHitsTaken: b?.slamHitsTaken ?? this.lastOniSlam,
+      chargeHitsTaken: b?.chargeHitsTaken ?? this.lastOniCharge,
+      swingHitsTaken: b?.swingHitsTaken ?? this.lastOniSwing,
+      fightDuration: this.oniSpawned ? round2(this.time - this.oniStart) : 0,
+    };
+  }
+
+  // the Oni is disposed by the reaper before the run is finalised, so its
+  // counters are copied out while it is still alive
+  private lastOniPerfect = 0;
+  private lastOniSlam = 0;
+  private lastOniCharge = 0;
+  private lastOniSwing = 0;
+
+  private keepOniCounters() {
+    const b = this.boss;
+    if (!b) return;
+    this.lastOniPerfect = b.perfectDodges;
+    this.lastOniSlam = b.slamHitsTaken;
+    this.lastOniCharge = b.chargeHitsTaken;
+    this.lastOniSwing = b.swingHitsTaken;
   }
 
   // ---------------------------------------------------------------- actions
@@ -845,6 +873,7 @@ export class Game {
       this.sfx.unlock();
       this.spreadCd = v5.spreadCooldown;
       this.logger.spreadUses++;
+      this.tutorial?.noteSpread();
       this.formula.noteSpread(this.time);
       this.swarm.spread();
       this.fx.ring(
@@ -864,6 +893,7 @@ export class Game {
       this.sfx.unlock();
       this.gravityCd = v5.gravityCooldown;
       this.logger.gravityUses++;
+      this.tutorial?.noteGravity();
       const dir = this.aimDir();
       // recasting replaces a live core: harvest its numbers before dropping it,
       // or every core the player throws early goes unrecorded
@@ -912,11 +942,14 @@ export class Game {
 
   private finishRecall() {
     const hits = this.recall.currentHits;
-    this.flushEaterRecall();
+    this.flushBossRecall();
     this.swarm.endRecall();
     const rec = this.recall.end();
     if (!rec) return;
 
+    // the tutorial only counts a recall that actually killed something: that
+    // is the moment the whole lesson lands (spec 43)
+    this.tutorial?.noteRecall(rec.hits, rec.killedEnemies);
     this.logger.homingRedirectCount = this.swarm.homingRedirects;
     if (this.recallStartedInOrbit) this.logger.hitsFromOrbitStateRecall += hits;
 
@@ -973,9 +1006,9 @@ export class Game {
   // ------------------------------------------------------------ player harm
 
   /** Damage is paid in shikigami, not in an HP bar (spec 20-27). */
-  private hitPlayer(damage: number, from: THREE.Vector3) {
-    if (this.ended || this.finishTimer >= 0) return;
-    if (!this.player.takeDamage(damage)) return;
+  private hitPlayer(damage: number, from: THREE.Vector3): boolean {
+    if (this.ended || this.finishTimer >= 0) return false;
+    if (!this.player.takeDamage(damage)) return false;
     this.logger.damageEvents++;
     this.logger.damageTaken += damage;
     const n = Math.round(v5.scatterPerHit);
@@ -985,6 +1018,7 @@ export class Game {
     this.fx.stop(0.05);
     this.sfx.hurt();
     this.hud.showPop('式 散 −' + lost, this.swarm.activeCount);
+    return true;
   }
 
   // --------------------------------------------------------------- director
@@ -1055,14 +1089,12 @@ export class Game {
     for (let i = this.enemies.length - 1; i >= 0; i--) {
       const e = this.enemies[i];
       if (e.alive) continue;
-      // 境喰・八肢 owns its own limbs: it needs them around to run the sever
-      // beat and the death sequence, so the generic reaper leaves them alone
-      if (e.eaterPart) continue;
       if (e.isBoss && this.finishTimer >= 0) continue;
       this.combat.forget(e.id);
       e.dispose();
       this.enemies.splice(i, 1);
       if (e.isBoss) {
+        this.keepOniCounters();
         this.boss = null;
         this.hud.showBoss(false);
       }
@@ -1122,6 +1154,9 @@ export class Game {
   private endGame(victory: boolean) {
     if (this.ended) return;
     this.ended = true;
+    this.keepOniCounters();
+    if (this.boss && !this.boss.alive) this.logger.bossDefeated = true;
+    this.logger.bossFightDuration = this.oniSpawned ? round2(this.time - this.oniStart) : 0;
     if (this.recall.active) this.finishRecall();
     // the boss finisher gets here before the encounter notices it is clear
     this.journey?.closeCurrent(this.time);
@@ -1156,6 +1191,7 @@ export class Game {
       spreadContactDamage: t.spreadContactDamage,
       enemiesKilled: t.enemiesKilled,
       boss: this.bossLog(),
+      tutorial: this.tutorial?.log() ?? null,
       scattered: this.swarm.totalScattered,
       recovered: this.swarm.totalRecovered,
       lost: this.swarm.totalLost,
@@ -1169,25 +1205,6 @@ export class Game {
       fullSetupSuccesses: this.formula.fullSuccesses,
       params: { ...v5, ...params },
     });
-  }
-
-  private lastBossLog: BossLogSnapshot | null = null;
-
-  private bossLog(): BossLogSnapshot {
-    const e = this.eater;
-    if (!e && this.lastBossLog) return this.lastBossLog;
-    return {
-      damageTaken: e ? this.logger.damageTaken - this.logger.bossDamageTakenAtSpawn : 0,
-      legsSevered: e?.legsSevered ?? 0,
-      coreExposureCount: e?.coreExposureCount ?? 0,
-      coreRecallHits: e?.coreRecallHits ?? 0,
-      coreRecallDamage: e?.coreRecallDamage ?? 0,
-      perfectDodges: e?.perfectDodges ?? 0,
-      sweepHitsTaken: e?.sweepHitsTaken ?? 0,
-      pillarHitsTaken: e?.pillarHitsTaken ?? 0,
-      events: (e?.events ?? []) as Array<Record<string, unknown>>,
-      phases: (e?.phases ?? []) as unknown as Array<Record<string, number>>,
-    };
   }
 
   private buildExploration() {
@@ -1242,8 +1259,6 @@ export class Game {
     this.pickups.dispose();
     this.ink.dispose(this.scene);
     this.core?.dispose();
-    this.eater?.dispose();
-    this.eater = null;
     for (const o of this.omens) o.dispose();
     this.omens.length = 0;
     this.barrier?.dispose();
@@ -1260,19 +1275,6 @@ export class Game {
     });
     this.scene.clear();
   }
-}
-
-interface BossLogSnapshot {
-  damageTaken: number;
-  legsSevered: number;
-  coreExposureCount: number;
-  coreRecallHits: number;
-  coreRecallDamage: number;
-  perfectDodges: number;
-  sweepHitsTaken: number;
-  pillarHitsTaken: number;
-  events: Array<Record<string, unknown>>;
-  phases: Array<Record<string, number>>;
 }
 
 function round2(v: number): number {
@@ -1299,4 +1301,22 @@ function bandGeometry(inner: number, outer: number): THREE.RingGeometry {
   const g = new THREE.RingGeometry(inner, outer, 72);
   g.rotateX(-Math.PI / 2);
   return g;
+}
+
+/** shortest distance from (px,pz) to the segment a->b, in 2D */
+function distToSegment(
+  px: number,
+  pz: number,
+  ax: number,
+  az: number,
+  bx: number,
+  bz: number,
+): number {
+  const vx = bx - ax;
+  const vz = bz - az;
+  const len2 = vx * vx + vz * vz;
+  let t = len2 > 1e-9 ? ((px - ax) * vx + (pz - az) * vz) / len2 : 0;
+  if (t < 0) t = 0;
+  else if (t > 1) t = 1;
+  return Math.hypot(px - (ax + vx * t), pz - (az + vz * t));
 }

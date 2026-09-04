@@ -14,7 +14,8 @@ export interface EnemyWorld {
   playerPos: THREE.Vector3;
   fx: Fx;
   sfx: Sfx;
-  hitPlayer(damage: number, from: THREE.Vector3): void;
+  /** returns true only if the hit actually landed (false while invulnerable) */
+  hitPlayer(damage: number, from: THREE.Vector3): boolean;
   /** boss phase-2 move: yank N shikigami off the player and corrupt them */
   vacuum(source: EnemyBase, count: number): void;
 }
@@ -36,12 +37,10 @@ export abstract class EnemyBase {
   mass = 1;
   maxKnock = 14;
   /**
-   * Multiplier applied to RECALL hits only. Boss limbs use it so that cutting
-   * one is emphatically a job for the pull, not for chip damage (spec 17).
+   * Multiplier applied to RECALL hits only. The Oni raises it while it is in
+   * recovery, so the opening a dodge earns is worth taking (spec 11).
    */
   recallBonus = 1;
-  /** true for 境喰・八肢's own limbs and core, which manage their own lifecycle */
-  eaterPart = false;
   /** A2: seconds left frozen in cursed thread */
   snareTimer = 0;
   /** how many times this enemy has been snared, and for how long in total */

@@ -20,14 +20,13 @@ export interface DebugStats {
   gravityActive: boolean;
   pulled: number;
   pulledFromWait: number;
-  /** 境喰・八肢 read-outs (spec 39); null when it is not on the field */
+  /** Oni read-outs; null when no boss is on the field */
   boss: {
     hp: string;
     phase: number;
-    activeLegs: number;
-    severed: number;
+    state: string;
     nextAttack: string;
-    coreExposed: boolean;
+    recovering: boolean;
     perfectDodges: number;
   } | null;
 }
@@ -57,8 +56,9 @@ export class DebugPanel {
 
   onExportCurrent?: () => void;
   onExportAll?: () => void;
-  /** developer only: drop straight into the boss fight (spec 50) */
+  /** developer only: bring the Oni in now */
   onBossSandbox?: () => void;
+  onResetTutorial?: () => void;
 
   constructor() {
     for (const k of [
@@ -108,6 +108,7 @@ export class DebugPanel {
       this.sync();
     });
     $('d-boss').addEventListener('click', () => this.onBossSandbox?.());
+    $('d-tut').addEventListener('click', () => this.onResetTutorial?.());
     $('d-export').addEventListener('click', () => this.onExportCurrent?.());
     $('d-export-all').addEventListener('click', () => this.onExportAll?.());
     this.btn.addEventListener('click', () => this.toggle());
@@ -200,10 +201,10 @@ export class DebugPanel {
     const b = stats.boss;
     this.fields.bhp.textContent = b ? b.hp : '--';
     this.fields.bphase.textContent = b ? String(b.phase) : '--';
-    this.fields.blegs.textContent = b ? String(b.activeLegs) : '0';
-    this.fields.bsev.textContent = b ? String(b.severed) : '0';
-    this.fields.batk.textContent = b ? b.nextAttack : '--';
-    this.fields.bcore.textContent = b ? (b.coreExposed ? 'YES' : 'NO') : '--';
+    this.fields.blegs.textContent = b ? b.state : '--';
+    this.fields.bsev.textContent = b ? b.nextAttack : '--';
+    this.fields.batk.textContent = b ? (b.recovering ? 'YES' : 'no') : '--';
+    this.fields.bcore.textContent = b ? String(b.perfectDodges) : '0';
     this.fields.bdodge.textContent = b ? String(b.perfectDodges) : '0';
   }
 }

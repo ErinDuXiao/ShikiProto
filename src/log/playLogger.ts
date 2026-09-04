@@ -1,6 +1,6 @@
 import { VERSION } from '../core/runConfig';
 
-const STORAGE_KEY = 'shikigami_flow_logs_v8';
+const STORAGE_KEY = 'shikigami_flow_logs_v9';
 const MAX_STORED = 40;
 
 export interface RecallRecord {
@@ -53,10 +53,33 @@ export interface ExplorationLog {
   locations: Array<Record<string, string | number>>;
 }
 
+/** Tutorial analytics (spec 41-43). */
+export interface TutorialStep {
+  step: string;
+  startTime: number;
+  completeTime: number;
+  attempts: number;
+}
+
+export interface TutorialLog {
+  started: boolean;
+  completed: boolean;
+  skipped: boolean;
+  duration: number;
+  steps: TutorialStep[];
+  /** how many times Release -> Move -> Recall actually killed something */
+  recallSuccessCount: number;
+  timeToUnderstandRelease: number | null;
+  timeToFirstSuccessfulRecall: number | null;
+  timeToFirstRecallKill: number | null;
+  timeToFirstDash: number | null;
+  timeToFirstGravitySetup: number | null;
+}
+
 export interface PlayLog {
   sessionId: string;
   version: string;
-  mode: 'arena' | 'kyoto';
+  mode: 'arena' | 'kyoto' | 'tutorial';
   playStartTime: string;
   playDuration: number;
   victory: boolean;
@@ -146,20 +169,18 @@ export interface PlayLog {
 
   enemiesKilled: number;
 
-  // --- 境喰・八肢 (spec 40)
+  // --- 鬼 the arena Oni
   bossEncountered: boolean;
   bossDefeated: boolean;
   bossFightDuration: number;
   bossDamageTaken: number;
-  bossLegsSevered: number;
-  bossCoreExposureCount: number;
-  bossCoreRecallHits: number;
-  bossCoreRecallDamage: number;
   bossPerfectDodges: number;
-  bossSweepHitsTaken: number;
-  bossPillarHitsTaken: number;
-  bossEvents: Array<Record<string, unknown>>;
-  bossPhases: Array<Record<string, number>>;
+  bossSlamHitsTaken: number;
+  bossChargeHitsTaken: number;
+  bossSwingHitsTaken: number;
+
+  /** only present for tutorial runs */
+  tutorial: TutorialLog | null;
 
   // --- raw input counters, so the log can be sanity-checked against the run
   leftClickCount: number;
@@ -182,7 +203,7 @@ export interface PlayLog {
 export interface BuildInput {
   result: PlayLog['result'];
   victory: boolean;
-  mode: 'arena' | 'kyoto';
+  mode: 'arena' | 'kyoto' | 'tutorial';
   exploration: ExplorationLog | null;
   initialShikigami: number;
   totalShikigamiGrown: number;
@@ -197,16 +218,13 @@ export interface BuildInput {
   enemiesKilled: number;
   boss: {
     damageTaken: number;
-    legsSevered: number;
-    coreExposureCount: number;
-    coreRecallHits: number;
-    coreRecallDamage: number;
     perfectDodges: number;
-    sweepHitsTaken: number;
-    pillarHitsTaken: number;
-    events: Array<Record<string, unknown>>;
-    phases: Array<Record<string, number>>;
+    slamHitsTaken: number;
+    chargeHitsTaken: number;
+    swingHitsTaken: number;
+    fightDuration: number;
   };
+  tutorial: TutorialLog | null;
   scattered: number;
   recovered: number;
   lost: number;
@@ -382,17 +400,14 @@ export class PlayLogger {
 
       bossEncountered: this.bossEncountered,
       bossDefeated: this.bossDefeated,
-      bossFightDuration: this.bossFightDuration,
+      bossFightDuration: this.bossFightDuration || x.boss.fightDuration,
       bossDamageTaken: r2(x.boss.damageTaken),
-      bossLegsSevered: x.boss.legsSevered,
-      bossCoreExposureCount: x.boss.coreExposureCount,
-      bossCoreRecallHits: x.boss.coreRecallHits,
-      bossCoreRecallDamage: r2(x.boss.coreRecallDamage),
       bossPerfectDodges: x.boss.perfectDodges,
-      bossSweepHitsTaken: x.boss.sweepHitsTaken,
-      bossPillarHitsTaken: x.boss.pillarHitsTaken,
-      bossEvents: x.boss.events,
-      bossPhases: x.boss.phases,
+      bossSlamHitsTaken: x.boss.slamHitsTaken,
+      bossChargeHitsTaken: x.boss.chargeHitsTaken,
+      bossSwingHitsTaken: x.boss.swingHitsTaken,
+
+      tutorial: x.tutorial,
 
       leftClickCount: this.leftClickCount,
       dashCount: this.dashCount,

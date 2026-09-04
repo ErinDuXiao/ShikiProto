@@ -61,6 +61,50 @@
   #controls .key { font-size: 13px; letter-spacing: .1em; }
   #controls .act { font-size: 9px; color: var(--dim); letter-spacing: .16em; margin-top: 3px; }
 
+  /* small enough not to tempt a first-timer, present enough not to trap a
+     returning one (spec 38) */
+  #skiptut { position: fixed; left: 14px; top: 14px; z-index: 12; display: none; }
+  #skiptut.on { display: block; }
+  #skip-btn {
+    font: 9px/1 Consolas, monospace; letter-spacing: .18em; cursor: pointer;
+    background: rgba(10,10,16,.6); color: var(--dim);
+    border: 1px solid rgba(255,255,255,.14); padding: 7px 10px;
+  }
+  #skip-btn:hover { color: var(--ink); }
+
+  /* Tutorial: one line, centre screen, and only the control being taught
+     right now at the bottom (spec 17/34). */
+  #lesson {
+    left: 50%; top: 26%; transform: translateX(-50%); text-align: center;
+    opacity: 0; transition: opacity .45s; max-width: 80vw;
+  }
+  #lesson.on { opacity: 1; }
+  #lesson b {
+    font-size: 21px; font-weight: 400; letter-spacing: .12em; line-height: 1.5;
+    text-shadow: 0 0 26px rgba(0,0,0,.9);
+  }
+  #lessonkey {
+    left: 50%; bottom: 96px; transform: translateX(-50%); text-align: center;
+    opacity: 0; transition: opacity .45s;
+  }
+  #lessonkey.on { opacity: 1; }
+  #lessonkey span {
+    display: block; font-size: 15px; letter-spacing: .3em; color: #ffd98a;
+  }
+  #lessonkey em {
+    display: block; font-style: normal; font-size: 9px; letter-spacing: .26em;
+    color: var(--dim); margin-top: 5px;
+  }
+
+  /* Arena: the full control list, fading out once play is under way (spec 35/36) */
+  #reminder {
+    right: 20px; bottom: 22px; text-align: right;
+    font-size: 10px; letter-spacing: .14em; line-height: 1.9; color: var(--dim);
+    opacity: 0; transition: opacity 1.2s;
+  }
+  #reminder.on { opacity: .85; }
+  #reminder b { color: var(--ink); font-weight: 500; }
+
   /* the disturbance itself is off-screen at this camera pitch, so a small
      edge marker points at it (spec 30 allows exactly this, and no more) */
   #marker {
@@ -315,6 +359,10 @@
     <div class="sk"><div class="fill" id="cd-spider"></div><div class="lab"><span class="key">Q</span><span class="nm">GRAVITY</span></div></div>
   </div>
   <div id="hitcount" class="ui"></div>
+  <div id="skiptut"><button id="skip-btn">SKIP TUTORIAL</button></div>
+  <div id="lesson" class="ui"><b id="lesson-title"></b></div>
+  <div id="lessonkey" class="ui"><span id="lesson-k"></span><em id="lesson-a"></em></div>
+  <div id="reminder" class="ui"></div>
   <div id="marker" class="ui"><i></i><em id="marker-d"></em></div>
   <div id="objective" class="ui"><b id="obj-name"></b><span id="obj-sub"></span></div>
   <div id="banner" class="ui"></div>
@@ -335,15 +383,16 @@
     <div class="row"><span>GRAVITY</span><b id="d-gravity">--</b></div>
     <div class="row"><span>&nbsp;&nbsp;PULLED</span><b id="d-pulled">0</b></div>
     <div class="row"><span>&nbsp;&nbsp;FROM WAIT</span><b id="d-fromwait">0</b></div>
-    <h4>境喰・八肢</h4>
+    <h4>鬼 ONI</h4>
     <div class="row"><span>BOSS HP</span><b id="d-bhp">--</b></div>
     <div class="row"><span>PHASE</span><b id="d-bphase">--</b></div>
-    <div class="row"><span>ACTIVE LEGS</span><b id="d-blegs">0</b></div>
-    <div class="row"><span>SEVERED</span><b id="d-bsev">0</b></div>
-    <div class="row"><span>NEXT ATTACK</span><b id="d-batk">--</b></div>
-    <div class="row"><span>CORE EXPOSED</span><b id="d-bcore">NO</b></div>
-    <div class="row"><span>PERFECT DODGES</span><b id="d-bdodge">0</b></div>
-    <button class="btn" id="d-boss">BOSS SANDBOX</button>
+    <div class="row"><span>STATE</span><b id="d-blegs">--</b></div>
+    <div class="row"><span>NEXT</span><b id="d-bsev">--</b></div>
+    <div class="row"><span>RECOVERING</span><b id="d-batk">no</b></div>
+    <div class="row"><span>PERFECT DODGES</span><b id="d-bcore">0</b></div>
+    <div class="row"><span>&nbsp;</span><b id="d-bdodge"></b></div>
+    <button class="btn" id="d-boss">SPAWN ONI</button>
+    <button class="btn" id="d-tut">RESET TUTORIAL</button>
     <h4>PARAMETERS</h4>
     <h4>BOID PARAMETERS</h4>
     <div id="tuner"></div>
@@ -364,12 +413,13 @@
 
   <div id="start">
     <div class="title">SHIKIGAMI FLOW</div>
-    <div class="sub">PROTOTYPE V8</div>
+    <div class="sub">PROTOTYPE V9</div>
     <div class="pitch">Grow a living swarm, throw it into the battlefield, shape the situation<br>with a few deliberate skills, then call the entire flock back through your enemies.</div>
     <div class="grouphead">SWARM GRAMMAR &nbsp;—&nbsp; 放つ · 広げる · 集める · 呼ぶ</div>
     <div class="slots" id="slots"></div>
     <div class="modes">
       <button class="btn big" id="start-btn" autofocus>PLAY ARENA</button>
+      <button class="btn small" id="start-tutorial">Tutorial</button>
       <button class="btn small" id="start-kyoto">Kyoto Prototype &nbsp;·&nbsp; experimental</button>
     </div>
     <div class="foot">WASD MOVE &nbsp;·&nbsp; ` DEBUG</div>

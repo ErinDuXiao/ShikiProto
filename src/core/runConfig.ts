@@ -15,9 +15,9 @@ export enum SType {
 }
 
 /** Arena keeps the old combat test reachable; Kyoto is the v7 slice (spec 47). */
-export type GameMode = 'arena' | 'kyoto';
+export type GameMode = 'arena' | 'kyoto' | 'tutorial';
 
-export const VERSION = 'prototype_v8';
+export const VERSION = 'prototype_v9';
 
 /** Spider Bind is disabled, not deleted (spec 19). */
 export const SPIDER_ENABLED = false;

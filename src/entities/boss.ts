@@ -1,7 +1,18 @@
 import * as THREE from 'three';
 import { EnemyBase, type EnemyWorld } from './enemy';
 
-type BossState = 'idle' | 'slam' | 'charge' | 'vacuum';
+export type OniState = 'idle' | 'slam' | 'charge' | 'swing' | 'recover';
+
+/**
+ * Seconds the Oni is planted and open after an attack (spec 7). This is the
+ * whole point of the fight: the dodge is not survival, it is what buys the
+ * window.
+ */
+const RECOVER = { slam: 1.35, charge: 1.15, swing: 1.0 };
+/** a perfect dodge stretches the window rather than adding damage (spec 10) */
+const PERFECT_BONUS = 0.45;
+/** recall hits land harder while it is recovering (spec 11) */
+const RECALL_VULNERABLE_MUL = 1.4;
 
 /**
  * The Oni. Guards its front, so hammering it head-on with shikigami is a waste
@@ -9,13 +20,37 @@ type BossState = 'idle' | 'slam' | 'charge' | 'vacuum';
  */
 export class Oni extends EnemyBase {
   phase = 1;
-  private state: BossState = 'idle';
-  private timer = 1.6;
+  state: OniState = 'idle';
+  /**
+   * True only in the window where a dash is genuinely a dodge: the tail of a
+   * wind-up, or a charge that is already moving. Flagging the whole attack
+   * from the first frame of the tell let a player dash a second early and
+   * still be credited -- which teaches the wrong timing.
+   */
+  get swinging(): boolean {
+    if (this.state === 'charge') return this.sub === 1;
+    if (this.state === 'slam' || this.state === 'swing') return this.timer < 0.36;
+    return false;
+  }
+  /** set for the duration of one attack, cleared when the next is chosen */
+  private attacking = false;
+  /** set once per attack when the player dashed clear of it */
+  perfectThisAttack = false;
+  perfectDodges = 0;
+  slamHitsTaken = 0;
+  chargeHitsTaken = 0;
+  swingHitsTaken = 0;
+  /** what the player is about to have to answer, for the debug read-out */
+  private queued: OniState = 'idle';
+  onPerfectDodge?: () => void;
+  onTelegraph?: (kind: OniState) => void;
+  timer = 1.6;
   private sub = 0;
   private chargeDir = new THREE.Vector3(0, 0, 1);
   private body: THREE.Mesh;
   private shield: THREE.Mesh;
   private tell: THREE.Mesh;
+  private arc: THREE.Mesh;
   private core: THREE.Mesh;
   private baseScale = 1;
 
@@ -25,7 +60,7 @@ export class Oni extends EnemyBase {
   constructor(scene: THREE.Scene, x: number, z: number) {
     super(scene);
     this.isBoss = true;
-    this.maxHp = this.hp = 1800;
+    this.maxHp = this.hp = 1200;
     this.mass = 30;
     this.maxKnock = 3.2;
     this.radius = 3.0;
@@ -90,8 +125,29 @@ export class Oni extends EnemyBase {
     this.tell.position.y = 0.07;
     scene.add(this.tell);
 
+    // wide arc drawn on the floor for the close-range swing
+    const ag = new THREE.RingGeometry(0.28, 1, 44, 1, -1.15, 2.3);
+    ag.rotateX(-Math.PI / 2);
+    this.arc = new THREE.Mesh(
+      ag,
+      new THREE.MeshBasicMaterial({
+        color: 0xff2a1a,
+        transparent: true,
+        opacity: 0,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    this.arc.position.y = 0.08;
+    scene.add(this.arc);
+
     this.group.position.copy(this.pos);
     scene.add(this.group);
+  }
+
+  /** true while it is planted after an attack -- the opening a dodge earns */
+  get recovering(): boolean {
+    return this.state === 'recover';
   }
 
   /** front = heavily reduced, back = big bonus. */
@@ -132,7 +188,9 @@ export class Oni extends EnemyBase {
       case 'idle': {
         this.timer -= dt;
         // drift toward the player so it never turtles in a corner
-        if (dist > 7) {
+        // closes to inside swing range: it used to stop drifting at 7 while
+        // the swing needed < 6.5, so that attack could never actually come out
+        if (dist > 5.2) {
           this.pos.x += (dx / dist) * 2.6 * dt;
           this.pos.z += (dz / dist) * 2.6 * dt;
         }
@@ -163,9 +221,11 @@ export class Oni extends EnemyBase {
           world.fx.shake(0.5);
           world.sfx.hit(1);
           const pd = Math.hypot(world.playerPos.x - cx, world.playerPos.z - cz);
-          if (pd < 5.6) world.hitPlayer(11, this.pos);
-          this.state = 'idle';
-          this.timer = this.restTime();
+          // only count it if it actually connected -- a dodged slam is not a
+          // "hit taken", and the metric is meant to show how often the player
+          // failed to answer the tell
+          if (pd < 5.6 && world.hitPlayer(13, this.pos)) this.slamHitsTaken++;
+          this.enterRecover('slam', world);
         }
         break;
       }
@@ -191,30 +251,48 @@ export class Oni extends EnemyBase {
           const sp = 30;
           this.pos.x += this.chargeDir.x * sp * dt;
           this.pos.z += this.chargeDir.z * sp * dt;
-          if (dist < 3.4) world.hitPlayer(12, this.pos);
+          if (dist < 3.4 && world.hitPlayer(12, this.pos)) this.chargeHitsTaken++;
           if (this.timer <= 0) {
             world.fx.shake(0.3);
-            this.state = 'idle';
             this.sub = 0;
-            this.timer = this.restTime();
+            this.enterRecover('charge', world);
           }
         }
         break;
       }
-      case 'vacuum': {
+      case 'swing': {
         this.timer -= dt;
-        const total = 1.0;
+        const total = 0.8;
         const t = 1 - this.timer / total;
-        tellMat.color.setHex(0xb06bff);
-        tellMat.opacity = 0.25 + t * 0.5;
+        // the arc sits on the Oni and sweeps the side the player is on
+        this.arc.position.set(this.pos.x, 0.08, this.pos.z);
+        this.arc.scale.setScalar(7.4);
+        this.arc.rotation.y = -Math.atan2(this.facing.x, this.facing.z) + Math.PI / 2;
+        (this.arc.material as THREE.MeshBasicMaterial).opacity = 0.18 + t * 0.5;
+        this.body.rotation.y = -t * 0.5;
+        if (this.timer <= 0) {
+          this.body.rotation.y = 0;
+          (this.arc.material as THREE.MeshBasicMaterial).opacity = 0;
+          world.fx.ring(this.pos.x, this.pos.z, 2, 7.4, 0.3, 0xff5533);
+          world.fx.burst(this.pos.x, 2.2, this.pos.z, 30, 0xff6a3a, 11, 0.45);
+          world.fx.shake(0.42);
+          world.sfx.hit(0.85);
+          if (dist < 7.4 && world.hitPlayer(13, this.pos)) this.swingHitsTaken++;
+          this.enterRecover('swing', world);
+        }
+        break;
+      }
+      case 'recover': {
+        // Planted, breathing hard, wide open. The tell is a soft ring rather
+        // than a warning colour so it reads as "now" and not "danger".
+        this.timer -= dt;
+        tellMat.color.setHex(0xffd98a);
+        tellMat.opacity = 0.1 + Math.sin(performance.now() * 0.012) * 0.05;
         this.tell.position.set(this.pos.x, 0.07, this.pos.z);
-        this.tell.scale.setScalar(14 * (1 - t * 0.55));
+        this.tell.scale.setScalar(4.6);
         if (this.timer <= 0) {
           tellMat.opacity = 0;
-          world.fx.ring(this.pos.x, this.pos.z, 12, 1.5, 0.4, 0xb06bff);
-          world.fx.burst(this.pos.x, 2.4, this.pos.z, 50, 0x9a4dff, 10, 0.7);
-          world.fx.shake(0.32);
-          world.vacuum(this, 10 + Math.floor(Math.random() * 11));
+          this.recallBonus = 1;
           this.state = 'idle';
           this.timer = this.restTime();
         }
@@ -246,27 +324,63 @@ export class Oni extends EnemyBase {
     return this.phase === 1 ? 2.6 : this.phase === 2 ? 2.1 : 1.75;
   }
 
+  /**
+   * Three attacks, chosen by range so the answer is always legible: far means
+   * charge, close means swing, and slam covers the middle (spec 7-9).
+   */
   private pickAttack(world: EnemyWorld, dist: number) {
+    this.perfectThisAttack = false;
+    this.attacking = true;
     const roll = Math.random();
-    if (this.phase >= 2 && roll < 0.32) {
-      this.state = 'vacuum';
-      this.timer = 1.0;
-      world.sfx.hurt();
-      return;
-    }
-    if (dist > 9 || roll > 0.68) {
+    if (dist > 9 || (dist > 6 && roll > 0.62)) {
       this.state = 'charge';
       this.sub = 0;
-      this.timer = 0.7;
+      this.timer = 0.8;
       const dx = world.playerPos.x - this.pos.x;
       const dz = world.playerPos.z - this.pos.z;
       const d = Math.hypot(dx, dz) || 1;
       this.chargeDir.set(dx / d, 0, dz / d);
       this.facing.copy(this.chargeDir);
+    } else if (dist < 8 && roll > 0.42) {
+      this.state = 'swing';
+      this.timer = 0.8;
     } else {
       this.state = 'slam';
-      this.timer = 0.85;
+      this.timer = 0.9;
     }
+    this.queued = this.state;
+    this.onTelegraph?.(this.state);
+  }
+
+  /**
+   * Attack over: plant, open up, and stay that way long enough that the player
+   * can actually place the flock and pull it through (spec 7/11).
+   */
+  private enterRecover(from: 'slam' | 'charge' | 'swing', world: EnemyWorld) {
+    this.attacking = false;
+    this.state = 'recover';
+    this.timer = RECOVER[from] + (this.perfectThisAttack ? PERFECT_BONUS : 0);
+    this.recallBonus = RECALL_VULNERABLE_MUL;
+    if (this.perfectThisAttack) {
+      this.perfectDodges++;
+      this.onPerfectDodge?.();
+    }
+    void world;
+  }
+
+  /** the game calls this when the player dashed clear of a committed attack */
+  notePerfectDodge() {
+    if (this.attacking && this.swinging) this.perfectThisAttack = true;
+  }
+
+  get nextAttack(): string {
+    if (this.state === 'idle') return 'in ' + Math.max(0, this.timer).toFixed(1) + 's';
+    if (this.state === 'recover') return 'OPEN ' + Math.max(0, this.timer).toFixed(1) + 's';
+    return this.state.toUpperCase();
+  }
+
+  get lastQueued(): OniState {
+    return this.queued;
   }
 
   private setPhase(p: number, world: EnemyWorld) {
@@ -283,6 +397,9 @@ export class Oni extends EnemyBase {
   }
 
   override dispose() {
+    this.scene.remove(this.arc);
+    this.arc.geometry.dispose();
+    (this.arc.material as THREE.Material).dispose();
     this.scene.remove(this.tell);
     this.tell.geometry.dispose();
     (this.tell.material as THREE.Material).dispose();

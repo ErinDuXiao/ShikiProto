@@ -13,6 +13,14 @@ export class Hud {
   private banner = $('banner');
   private objective = $('objective');
   private marker = $('marker');
+  private lesson = $('lesson');
+  private lessonTitle = $('lesson-title');
+  private lessonKey = $('lessonkey');
+  private lessonK = $('lesson-k');
+  private lessonA = $('lesson-a');
+  private reminder = $('reminder');
+  private reminderTimer = 0;
+  private skip = $('skiptut');
   private markerD = $('marker-d');
   private objName = $('obj-name');
   private objSub = $('obj-sub');
@@ -76,13 +84,80 @@ export class Hud {
    */
   setMarker(sx: number, sy: number, distance: number, show: boolean) {
     if (!show) {
-      this.marker.classList.remove('on');
+      this.controls.style.display = '';
+    this.setSkillPipsVisible(true);
+    this.skip.classList.remove('on');
+    this.marker.classList.remove('on');
+    this.lesson.classList.remove('on');
+    this.lessonKey.classList.remove('on');
+    this.reminder.classList.remove('on');
       return;
     }
     this.marker.classList.add('on');
     this.marker.style.left = sx.toFixed(0) + 'px';
     this.marker.style.top = sy.toFixed(0) + 'px';
     this.markerD.textContent = Math.round(distance) + 'm';
+  }
+
+  /**
+   * The tutorial names one control at a time, so the permanent strip of all
+   * five has to go away while it runs (spec 34).
+   */
+  /** show the tutorial's escape hatch, and say what to do when it is used */
+  setSkipVisible(on: boolean, onSkip?: () => void) {
+    this.skip.classList.toggle('on', on);
+    const btn = document.getElementById('skip-btn');
+    if (btn && onSkip) btn.onclick = () => onSkip();
+  }
+
+  setControlsVisible(on: boolean) {
+    this.controls.style.display = on ? '' : 'none';
+  }
+
+  /** the cooldown pips name SPACE and Q before the tutorial has taught them */
+  setSkillPipsVisible(on: boolean) {
+    const skills = document.getElementById('skills');
+    if (skills) skills.style.display = on ? '' : 'none';
+  }
+
+  /**
+   * Tutorial only: the current lesson, and the single control it teaches.
+   * Passing an empty title clears both (spec 17/34).
+   */
+  setLesson(title: string, key: string, action: string) {
+    if (!title) {
+      this.lesson.classList.remove('on');
+      this.lessonKey.classList.remove('on');
+      return;
+    }
+    this.lessonTitle.textContent = title;
+    this.lesson.classList.add('on');
+    if (key) {
+      this.lessonK.textContent = key;
+      this.lessonA.textContent = action;
+      this.lessonKey.classList.add('on');
+    } else {
+      this.lessonKey.classList.remove('on');
+    }
+  }
+
+  /**
+   * Arena only: the whole control list, held for the first stretch of a run
+   * and then faded (spec 35/36).
+   */
+  showReminder(seconds: number) {
+    this.reminder.innerHTML =
+      '<b>LMB</b> Release<br><b>RMB</b> Recall<br><b>SHIFT</b> Dash<br>' +
+      '<b>SPACE</b> Spread<br><b>Q</b> Gravity';
+    this.reminder.classList.add('on');
+    this.reminderTimer = seconds;
+  }
+
+  /** a single nudge about one ability the player has not touched (spec 37) */
+  showHint(text: string) {
+    this.reminder.innerHTML = text;
+    this.reminder.classList.add('on');
+    this.reminderTimer = 6;
   }
 
   /** Kyoto only: the name of the place you are walking towards. */
@@ -135,6 +210,10 @@ export class Hud {
   }
 
   update(dt: number, playerMoved: boolean) {
+    if (this.reminderTimer > 0) {
+      this.reminderTimer -= dt;
+      if (this.reminderTimer <= 0) this.reminder.classList.remove('on');
+    }
     if (this.bannerTimer > 0) {
       this.bannerTimer -= dt;
       if (this.bannerTimer <= 0) this.banner.classList.remove('on');

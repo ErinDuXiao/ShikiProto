@@ -5,6 +5,7 @@ import { DebugPanel } from './ui/debugPanel';
 import { Sfx } from './core/audio';
 import { PlayLogger } from './log/playLogger';
 import { CONTROLS, type GameMode } from './core/runConfig';
+import { resetTutorial, tutorialCompleted } from './systems/tutorial';
 
 const app = document.getElementById('app') as HTMLDivElement;
 
@@ -28,6 +29,13 @@ function startRun(mode: GameMode = lastMode) {
   start.classList.add('off');
   game?.dispose();
   game = new Game(renderer, hud, debug, sfx, mode);
+  // finishing the tutorial rolls straight into the arena rather than dumping
+  // the player back on a menu (spec 33)
+  if (mode === 'tutorial') {
+    game.onEnd = (victory) => {
+      if (victory) setTimeout(() => startRun('arena'), 900);
+    };
+  }
 }
 
 function toStartScreen() {
@@ -50,17 +58,26 @@ for (const s of CONTROLS) {
 }
 
 const arenaBtn = document.getElementById('start-btn') as HTMLButtonElement;
-arenaBtn.addEventListener('click', () => {
+
+/**
+ * PLAY ARENA sends a first-time player through the tutorial once, then always
+ * straight into the arena (spec 18). The tutorial hands over to the arena when
+ * it finishes, so this is the only place that decision is made.
+ */
+function playArena() {
   sfx.unlock();
-  startRun('arena');
+  startRun(tutorialCompleted() ? 'arena' : 'tutorial');
+}
+
+arenaBtn.addEventListener('click', playArena);
+document.getElementById('start-tutorial')!.addEventListener('click', () => {
+  sfx.unlock();
+  startRun('tutorial');
 });
 // Enter starts the arena from the title screen (spec 48)
 window.addEventListener('keydown', (e) => {
   if (start.classList.contains('off')) return;
-  if (e.code === 'Enter' || e.code === 'NumpadEnter') {
-    sfx.unlock();
-    startRun('arena');
-  }
+  if (e.code === 'Enter' || e.code === 'NumpadEnter') playArena();
 });
 document.getElementById('start-kyoto')!.addEventListener('click', () => {
   sfx.unlock();
@@ -98,7 +115,10 @@ requestAnimationFrame(frame);
   exportAll: () => PlayLogger.downloadAll(),
   start: startRun,
   arena: () => startRun('arena'),
-  bossSandbox: () => game?.bossSandbox(),
+  spawnOni: () => game?.spawnArenaOni(),
+  tutorial: () => startRun('tutorial'),
+  resetTutorial,
+  hud,
   kyoto: () => startRun('kyoto'),
   menu: toStartScreen,
   get game() {
