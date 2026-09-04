@@ -28,6 +28,10 @@ jobs:
       # `npm run build` runs tsc --noEmit first, so a type error fails the deploy
       - run: npm run build
       - uses: actions/configure-pages@v5
+        # turns Pages on the first time this runs, so nothing has to be
+        # switched on by hand in the repo settings
+        with:
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
