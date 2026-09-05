@@ -35,6 +35,23 @@ import type { DebugPanel } from './ui/debugPanel';
  * the edge marker's job, not the camera's.
  */
 const LOOK_AHEAD = 9;
+
+/** when the Oni arrives if the flock has not got there first (v10 spec 7) */
+const ONI_TIME = 210;
+const ONI_SHIKIGAMI = 80;
+/** how long after a dash its i-frames still count for a dodge (v10 spec 22) */
+const DODGE_GRACE = 0.22;
+/**
+ * The attack has to have been aimed at the player rather than happening
+ * elsewhere. This is deliberately a range and not a "the hitbox brushed your
+ * collision" test: the charge travels 18 units THROUGH where the player was
+ * standing, so a dodge that works ends with the two of them far apart --
+ * measured, a clean sideways dash leaves 13 to 27 units between them. Judging
+ * on proximity would credit the player who never moved and deny the one who
+ * did. The discrimination lives in the timing instead, which is measurable:
+ * dashing early or late scores nothing.
+ */
+const DODGE_NEAR = 14;
 const SEND_MIN = 10;
 const SEND_MAX = 18;
 
@@ -107,6 +124,16 @@ export class Game {
   private tmpDir = new THREE.Vector3();
 
   onEnd?: (victory: boolean) => void;
+  /**
+   * Fired after this run has actually put a frame on screen.
+   *
+   * The curtain is raised from here rather than from a requestAnimationFrame
+   * callback in main.ts: rAF is what drives the render in the first place, so
+   * hooking the reveal to a real drawn frame is both more accurate and immune
+   * to a hidden tab, where a bare rAF callback measured 0 frames per second and
+   * would have left the player looking at black.
+   */
+  onFirstFrame?: () => void;
 
   constructor(
     private renderer: THREE.WebGLRenderer,
@@ -153,6 +180,7 @@ export class Game {
     this.scene.add(this.orbitBand);
 
     this.player.onDash = () => {
+      this.lastDashAt = this.time;
       this.logger.dashCount++;
       this.tutorial?.noteDash();
       this.swarm.notifyDash();
@@ -190,12 +218,7 @@ export class Game {
       // no UI shout; the quiet is the message
       this.hud.hideBanner();
     };
-    // The mid-boss beat is skipped once the real Oni is out -- on a fast run
-    // the arena Oni arrives at 75 shikigami, well before 135s.
-    this.waves.onMidBoss = () => {
-      if (!this.oniSpawned) this.spawnOni('mid');
-    };
-    // The scripted boss beat and the automatic spawn are the same event, so
+    // The scripted boss beat and the growth-driven spawn are the same event, so
     // they share one idempotent entry point rather than racing each other.
     this.waves.onBoss = () => this.spawnArenaOni();
 
@@ -250,23 +273,57 @@ export class Game {
     };
     t.onComplete = () => {
       markTutorialCompleted();
-      this.hud.setLesson('', '', '');
-      this.hud.setSkipVisible(false);
-      this.hud.showBanner('The shikigami are your weapon.', 3.0);
-      this.tutorialOutro = 3.2;
+      this.beginTutorialOutro(true);
     };
     this.hud.setSkipVisible(true, () => {
       t.skip();
       markTutorialCompleted();
-      this.hud.setLesson('', '', '');
-      this.hud.setSkipVisible(false);
-      this.endGame(true);
+      // leaving early skips the send-off too, but still gets the curtain --
+      // a hard cut into the arena reads as a crash
+      this.beginTutorialOutro(false);
     });
     this.tutorial = t;
     t.begin(this.player.pos);
   }
 
+  /**
+   * Seconds since the last lesson was answered. -1 while the tutorial is still
+   * being played.
+   *
+   * The tutorial is onboarding, not a mode with a win state, so it does not end
+   * on a VICTORY screen, a fanfare or a stat readout. It ends the way a lesson
+   * ends: the field empties, the flock comes home, one bell, one small line,
+   * and then the arena. The player should be thinking "right, now the real
+   * thing", not "I won".
+   */
   private tutorialOutro = -1;
+
+  /** the beats of that send-off, in seconds from the last lesson */
+  private static readonly OUTRO = {
+    /** the flock has reached the player and settles back into formation */
+    settle: 0.6,
+    /** the line has been up long enough to read */
+    hold: 2.1,
+    /** the curtain is fully down and the arena can take over */
+    done: 3.0,
+  };
+
+  private beginTutorialOutro(completed: boolean) {
+    this.hud.setLesson('', '', '');
+    this.hud.setSkipVisible(false);
+    this.hud.hideBanner();
+    if (!completed) {
+      // skipped: straight to the curtain, no send-off they did not earn
+      this.tutorialOutro = Game.OUTRO.hold;
+      return;
+    }
+    // the shikigami come back to the player -- the last thing they see before
+    // the line is their own flock reforming, not a results panel
+    this.swarm.beginRecall(this.time, this.player.pos.x, this.player.pos.z);
+    this.sfx.bell();
+    this.hud.showOutro('The shikigami are your weapon.');
+    this.tutorialOutro = 0;
+  }
 
   /**
    * Each step builds the smallest situation that makes its lesson true. The
@@ -336,11 +393,21 @@ export class Game {
     const t = this.tutorial;
     if (!t) return;
 
-    if (this.tutorialOutro > 0) {
-      this.tutorialOutro -= dt;
-      if (this.tutorialOutro <= 0) {
+    if (this.tutorialOutro >= 0) {
+      const was = this.tutorialOutro;
+      this.tutorialOutro += dt;
+      const now = this.tutorialOutro;
+      const crossed = (m: number) => was < m && now >= m;
+      const O = Game.OUTRO;
+      if (crossed(O.settle)) this.swarm.endRecall();
+      if (crossed(O.hold)) {
+        this.hud.hideOutro();
+        this.hud.setFade(1, O.done - O.hold);
+      }
+      if (now >= O.done) {
         this.tutorialOutro = -1;
-        this.endGame(true);
+        // quiet: the run is still logged, it just does not announce itself
+        this.endGame(true, true);
       }
       return;
     }
@@ -616,8 +683,14 @@ export class Game {
         }
       }
     }
-    if (this.tutorialMode) this.updateTutorial(dt);
-    else {
+    if (this.tutorialMode) {
+      this.updateTutorial(dt);
+      // The tutorial's send-off ends the run, and main.ts disposes this Game
+      // and builds the next one from inside that call. Carrying on down this
+      // frame would render a disposed scene and stamp stale numbers over the
+      // HUD the new run has just set.
+      if (this.disposed) return;
+    } else {
       this.updateOni(dt);
       this.updateHints(dt);
     }
@@ -689,7 +762,14 @@ export class Game {
 
     this.renderer.render(this.scene, this.rig.camera);
     this.rig.restore();
+    if (!this.drewOnce) {
+      this.drewOnce = true;
+      this.onFirstFrame?.();
+    }
   }
+
+  private drewOnce = false;
+  private disposed = false;
 
   /**
    * Point at the disturbance while it is out of frame. Projected from the top
@@ -804,19 +884,31 @@ export class Game {
     if (this.mode !== 'arena' || this.ended || this.finishTimer >= 0) return;
 
     if (!this.oniSpawned) {
-      // whichever comes first: a few minutes, or a flock big enough that the
-      // player has stopped needing to move (spec 14)
-      if (this.time > 195 || this.swarm.activeCount >= 75) this.spawnArenaOni();
+      // v10 spec 7: whichever comes first, but both later than v9's 195 s / 75.
+      // Measured, the old pair had the Oni arriving mid-growth and the run
+      // ending at ~222 s with the flock at 84 -- 100 shikigami was never
+      // reachable. The player should meet the Oni already commanding 80+.
+      if (this.time > ONI_TIME || this.swarm.activeCount >= ONI_SHIKIGAMI) this.spawnArenaOni();
       return;
     }
 
     const b = this.boss;
     if (!b || !b.alive) return;
 
-    if (b.swinging && this.player.dashInvulnerable && !b.perfectThisAttack) {
+    // v10 spec 22: the test is whether the attack's hitbox swept past the
+    // player while the dash's i-frames were live -- not whether the two happen
+    // to be close afterwards. The charge covers 18 units, so by the time it
+    // stops, a player who dodged it WELL is the furthest away of anyone; the v9
+    // distance check credited the player who stood still and denied the one who
+    // actually moved.
+    const dashFresh =
+      this.player.dashInvulnerable || this.time - this.lastDashAt <= DODGE_GRACE;
+    if (dashFresh) {
       const d = Math.hypot(this.player.pos.x - b.pos.x, this.player.pos.z - b.pos.z);
-      // close enough that it was a real dodge and not just standing away
-      if (d < 11) b.notePerfectDodge();
+      if (d < DODGE_NEAR) {
+        b.noteDash();
+        if (b.swinging && !b.perfectThisAttack) b.notePerfectDodge();
+      }
     }
   }
 
@@ -852,6 +944,9 @@ export class Game {
     this.oniRecallDamage += dmg;
   }
 
+  /** damage this one pull put into the Oni, kept past flushBossRecall */
+  private oniRecallDamageThisPull = 0;
+
   /** a pull landed on an Oni that was still planted: say so */
   private flushBossRecall() {
     const b = this.boss;
@@ -860,6 +955,7 @@ export class Game {
       this.fx.shake(0.5);
       this.sfx.bigHit(this.oniRecallHits);
     }
+    this.oniRecallDamageThisPull = this.oniRecallDamage;
     this.oniRecallHits = 0;
     this.oniRecallDamage = 0;
   }
@@ -874,6 +970,8 @@ export class Game {
       nextAttack: b.nextAttack,
       recovering: b.recovering,
       perfectDodges: b.perfectDodges,
+      chargeDodges: b.chargeDodges,
+      counterRecalls: b.counterRecalls,
     };
   }
 
@@ -885,6 +983,10 @@ export class Game {
       slamHitsTaken: b?.slamHitsTaken ?? this.lastOniSlam,
       chargeHitsTaken: b?.chargeHitsTaken ?? this.lastOniCharge,
       swingHitsTaken: b?.swingHitsTaken ?? this.lastOniSwing,
+      chargeDodges: b?.chargeDodges ?? this.lastOniChargeDodges,
+      counterRecalls: b?.counterRecalls ?? this.lastOniCounters,
+      counterRecallDamage: round2(b?.counterRecallDamage ?? this.lastOniCounterDamage),
+      events: this.counterRecalls.slice(),
       fightDuration: this.oniSpawned ? round2(this.time - this.oniStart) : 0,
     };
   }
@@ -895,6 +997,9 @@ export class Game {
   private lastOniSlam = 0;
   private lastOniCharge = 0;
   private lastOniSwing = 0;
+  private lastOniChargeDodges = 0;
+  private lastOniCounters = 0;
+  private lastOniCounterDamage = 0;
 
   private keepOniCounters() {
     const b = this.boss;
@@ -903,6 +1008,9 @@ export class Game {
     this.lastOniSlam = b.slamHitsTaken;
     this.lastOniCharge = b.chargeHitsTaken;
     this.lastOniSwing = b.swingHitsTaken;
+    this.lastOniChargeDodges = b.chargeDodges;
+    this.lastOniCounters = b.counterRecalls;
+    this.lastOniCounterDamage = b.counterRecallDamage;
   }
 
   // ---------------------------------------------------------------- actions
@@ -1007,6 +1115,7 @@ export class Game {
 
     // 術式: was this recall the product of a chain, or just a big crowd?
     const formula = this.formula.evaluate(this.time, hits);
+    const counter = this.noteCounterRecall(rec.damage, rec.hits);
 
     this.logger.addRecall({
       t: rec.timestamp,
@@ -1019,6 +1128,16 @@ export class Game {
       duringOrbit: this.recallStartedInOrbit,
       formula: formula ? formula.kind : null,
     });
+
+    if (counter) {
+      // v10 spec 20: no banner, no score. A bell, a heavier stop, the Oni
+      // rocked back, and one white stroke left across the ground.
+      this.fx.stop(0.14);
+      this.fx.shake(1.0);
+      this.sfx.bell();
+      this.inkSlash(1.6);
+      this.hud.showSkill('反攻  COUNTER');
+    }
 
     if (formula) {
       // a different, lower bell -- not the recall chime (spec 40)
@@ -1041,6 +1160,32 @@ export class Game {
       this.inkSlash(0.4);
       this.sfx.bigHit(hits);
     }
+  }
+
+  /**
+   * The exchange the Oni fight is built around (v10 spec 19): get out of the
+   * way of a charge, then answer it. Recorded rather than scored -- the reward
+   * is the opening itself, not a bonus.
+   */
+  private counterRecalls: Array<Record<string, string | number>> = [];
+
+  private noteCounterRecall(damage: number, hits: number): boolean {
+    const b = this.boss;
+    if (!b || !b.alive || this.oniRecallDamageThisPull <= 0) return false;
+    const since = b.sinceChargeDodge;
+    if (since === null) return false;
+    if (!b.noteRecallHit(this.oniRecallDamageThisPull)) return false;
+    this.counterRecalls.push({
+      t: round2(this.time),
+      type: 'counter_recall',
+      bossAttack: 'charge',
+      recallHits: hits,
+      damage: round2(this.oniRecallDamageThisPull),
+      secondsAfterDodge: since,
+      shikigamiCount: this.swarm.activeCount,
+    });
+    void damage;
+    return true;
   }
 
   private debugFormula(kind: string) {
@@ -1083,17 +1228,25 @@ export class Game {
   private checkMilestone() {
     if (this.milestoneShown || this.swarm.activeCount < RUN.milestone) return;
     this.milestoneShown = true;
-    this.hud.showBanner('百式', 1.6);
-    this.fx.screenFlash(0.1);
-    this.fx.ring(this.player.pos.x, this.player.pos.z, 1, 16, 0.6, 0xffffff);
-    this.sfx.seal();
-    // 2-4s to walk and look at the flock before anything else happens (spec 22)
-    if (this.journey) this.journey.encounter?.pause(3);
-    else this.waves.breathe(3);
-    this.hundredEventAt = this.time + 3.2;
+    // v10 spec 9: short and strong. One second, a bell and a glow -- the old
+    // three-second hold was a stop, and by v10 the Oni is usually already on
+    // the field when the hundredth arrives.
+    this.hud.showBanner('百式', 1.1);
+    this.fx.screenFlash(0.14);
+    this.fx.ring(this.player.pos.x, this.player.pos.z, 1, 18, 0.5, 0xffffff);
+    this.fx.burst(this.player.pos.x, 1.4, this.player.pos.z, 30, 0xfff2cc, 9, 0.5);
+    this.sfx.bell();
+    const breath = this.boss && this.boss.alive ? 0 : 1.2;
+    if (breath > 0) {
+      if (this.journey) this.journey.encounter?.pause(breath);
+      else this.waves.breathe(breath);
+    }
+    this.hundredEventAt = this.time + breath + 0.4;
   }
 
   private hundredEventAt = -1;
+  /** when the player last dashed, for the dodge window */
+  private lastDashAt = -99;
 
   private aliveCount(): number {
     let n = 0;
@@ -1227,7 +1380,12 @@ export class Game {
 
   // -------------------------------------------------------------- game over
 
-  private endGame(victory: boolean) {
+  /**
+   * @param quiet finalise and log the run without the end screen or the
+   * fanfare. The tutorial uses this: it is onboarding, so there is nothing to
+   * win and nothing to score.
+   */
+  private endGame(victory: boolean, quiet = false) {
     if (this.ended) return;
     this.ended = true;
     this.keepOniCounters();
@@ -1242,9 +1400,11 @@ export class Game {
     );
     if (!log) return;
     this.lastLog = log;
-    this.hud.showEnd(victory, victory ? 'VICTORY' : 'THE FORMATION IS BROKEN', summary(log));
-    if (victory) this.sfx.victory();
-    else this.sfx.defeat();
+    if (!quiet) {
+      this.hud.showEnd(victory, victory ? 'VICTORY' : 'THE FORMATION IS BROKEN', summary(log));
+      if (victory) this.sfx.victory();
+      else this.sfx.defeat();
+    }
     this.onEnd?.(victory);
   }
 
@@ -1329,6 +1489,7 @@ export class Game {
   }
 
   dispose() {
+    this.disposed = true;
     if (this.rewardBaseline) {
       Object.assign(v5, this.rewardBaseline);
       this.rewardBaseline = null;

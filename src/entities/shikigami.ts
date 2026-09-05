@@ -864,15 +864,32 @@ export class ShikigamiManager {
   }
 }
 
-/** 30 at 0:00 -> ~100 around 4:30-5:00 -> 150 by the end (spec 46). */
+/**
+ * The ceiling on the flock at a given moment: 30 at 0:00 -> 100 at 4:00 -> 150
+ * by the end.
+ *
+ * This, not the talisman economy, is what actually shaped the v9 growth curve.
+ * A competent player rides this line exactly -- measured, the autopilot hit 50
+ * at 84.8 s and 75 at 181.7 s against a cap that allowed them at 81.4 s and
+ * 183.2 s, and raising pickupDropRate from 0.5 to 0.9 changed the run by
+ * literally nothing because every talisman past the cap is wasted.
+ *
+ * v10 pulls the 100 point in from 285 s to 240 s, which puts the whole curve
+ * inside the target window (50 by 1:09, 75 by 2:34, 100 by 4:00). The drop
+ * rate still matters for anyone NOT riding the cap: the reference human run
+ * peaked at 60 where the cap allowed 93.
+ */
 function scheduleCap(elapsed: number): number {
   if (!Number.isFinite(elapsed)) return Number.MAX_SAFE_INTEGER;
   const t = elapsed * v5.growthSpeed;
   const base = v5.initialShikigami;
-  const toHundred = (Math.min(t, 285) / 285) * 70;
-  const after = (Math.max(0, t - 285) / 120) * 50;
+  const toHundred = (Math.min(t, HUNDRED_AT) / HUNDRED_AT) * 70;
+  const after = (Math.max(0, t - HUNDRED_AT) / 120) * 50;
   return Math.round(base + toHundred + after);
 }
+
+/** seconds at which the schedule stops holding the flock back from 100 */
+const HUNDRED_AT = 240;
 
 /**
  * A comet shard: long, pointed, slightly asymmetric. Reads as a mote of light

@@ -1,6 +1,6 @@
 import { VERSION } from '../core/runConfig';
 
-const STORAGE_KEY = 'shikigami_flow_logs_v9';
+const STORAGE_KEY = 'shikigami_flow_logs_v10';
 const MAX_STORED = 40;
 
 export interface RecallRecord {
@@ -185,6 +185,14 @@ export interface PlayLog {
   bossSlamHitsTaken: number;
   bossChargeHitsTaken: number;
   bossSwingHitsTaken: number;
+  /**
+   * v10 spec 38. The pair that says whether the fight is being played as
+   * intended: a charge got out of the way of, then answered with a pull.
+   */
+  bossChargeDodges: number;
+  bossCounterRecalls: number;
+  bossCounterRecallDamage: number;
+  counterRecallEvents: Array<Record<string, string | number>>;
 
   /** only present for tutorial runs */
   tutorial: TutorialLog | null;
@@ -229,6 +237,11 @@ export interface BuildInput {
     slamHitsTaken: number;
     chargeHitsTaken: number;
     swingHitsTaken: number;
+    /** charges the player got out of the way of (v10 spec 38) */
+    chargeDodges: number;
+    counterRecalls: number;
+    counterRecallDamage: number;
+    events: Array<Record<string, string | number>>;
     fightDuration: number;
   };
   tutorial: TutorialLog | null;
@@ -429,6 +442,10 @@ export class PlayLogger {
       bossSlamHitsTaken: x.boss.slamHitsTaken,
       bossChargeHitsTaken: x.boss.chargeHitsTaken,
       bossSwingHitsTaken: x.boss.swingHitsTaken,
+      bossChargeDodges: x.boss.chargeDodges,
+      bossCounterRecalls: x.boss.counterRecalls,
+      bossCounterRecallDamage: r2(x.boss.counterRecallDamage),
+      counterRecallEvents: x.boss.events,
 
       tutorial: x.tutorial,
 

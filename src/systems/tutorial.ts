@@ -129,7 +129,10 @@ export class Tutorial {
     if (this.opened) this.closeStep();
     this.opened = false;
     this.done = true;
-    this.onComplete?.();
+    // A skip is not a completion. finish() used to fire onComplete either way,
+    // so leaving early played the whole send-off -- bell, line and all -- for a
+    // lesson the player had just declined to take.
+    if (!this.skipped) this.onComplete?.();
   }
 
   skip() {

@@ -110,6 +110,17 @@ export class Sfx {
     this.tone(660, 1.3, 'sine', 0.14);
   }
 
+  /**
+   * The tutorial's send-off: one short bell, close to the recall bell the
+   * player has been hearing all the way through. Explicitly NOT victory() --
+   * a rising fanfare would tell them they had won something.
+   */
+  bell() {
+    this.tone(1568, 0.7, 'sine', 0.18);
+    this.tone(2350, 0.5, 'sine', 0.07);
+    this.tone(784, 0.9, 'sine', 0.09);
+  }
+
   victory() {
     [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => this.tone(f, 0.6, 'sine', 0.16), i * 130));
   }

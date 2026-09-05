@@ -1,4 +1,4 @@
-# SHIKIGAMI FLOW — Prototype v9
+# SHIKIGAMI FLOW — Prototype v10
 
 Swarm Techniques / Scatter & Recover / Combat Rhythm.
 
@@ -48,6 +48,144 @@ Node 18+. No external assets.
 
 Shift is never shared with Spread. Dash is how you get to the other side of a pack,
 which is how a recall line gets built.
+
+---
+
+## Growth — what was actually holding it back
+
+v9 ended runs with the flock around 60. The brief's first guess was the talisman
+economy, and the fix it suggested was `pickupDropRate: 0.5 -> 0.6`.
+
+That is not what was capping it. Growth is gated by a **schedule**, not by
+supply:
+
+```
+cap(t) = 30 + min(t, HUNDRED_AT) / HUNDRED_AT * 70
+```
+
+At `HUNDRED_AT = 285` that allowed 50 at 81 s, 75 at 183 s, and 100 only at
+4:45. Measured, the autopilot reached 50 at 84.8 s and 75 at 181.7 s — it was
+riding the ceiling the entire run.
+
+> Raising `pickupDropRate` from **0.5 to 0.9** changed the run by **nothing**.
+> Same seed, same enemies, identical flock size at every sample. Every talisman
+> above the cap is discarded, so the dial the brief reached for was connected to
+> nothing for a player who was already keeping up.
+
+`HUNDRED_AT` is now **240**, which puts the whole curve inside the target
+window. The drop-rate change is kept at 0.6 anyway, because it is the dial that
+matters for anyone NOT riding the cap — the reference human run peaked at 60
+where the schedule would have allowed 93.
+
+The 135 s mid-boss went with it. It was arriving mid-growth and, once killed,
+ending the run: measured at ~222 s with the flock at 84 and 100 unreachable.
+Its slot is now a **SURGE** — a big, tightly packed wave, which is a fat recall
+line and a heap of talismans (brief 8).
+
+### Measured, one run, autopilot
+
+| | target | v9 | v10 |
+| --- | --- | --- | --- |
+| 50 shikigami | 1:00–1:30 | 1:24 | **1:07** |
+| 75 shikigami | 2:15–3:00 | 3:02 | **2:33** |
+| 100 shikigami | 3:30–4:30 | never | **4:09** |
+| peak flock | 100+ | 87 | **104** |
+| run length | 4–6 min | 4:00 | **4:26** |
+| flock when the Oni lands | 80–100 | 80 | **80** |
+| boss fight | 45–90 s | 37 s | **90 s** |
+| spread uses | 10–20 | 13 | **17** |
+
+`gravityUses` (7) and `dashCount` (111) are the autopilot's own hard-coded
+cadence — a 12 s gravity timer and a dash on every close enemy — not a statement
+about the tuning.
+
+**Growth is playstyle-dependent, and that is intended.** A second autopilot
+written to prioritise the boss fight over talismans reached 75 at 190 s rather
+than 153 s. The schedule sets the ceiling; what the player does decides how
+close they get to it.
+
+---
+
+## 鬼 — dodge, then answer
+
+The brief's diagnosis was that the Oni was a wall rather than a rhythm. Three
+things changed, none of them HP or damage (brief 27).
+
+**The charge is now the fight.** At v9's thresholds the Oni closed to 5.2 units
+and then could only swing or slam, so the move the whole encounter is built
+around barely came out. Measured over 180 s at charge range: charge is now
+**76%** of its attacks.
+
+**The tell is the loudest thing on screen.** A 0.9 s wind-up in which it drops
+into a crouch, locks on, and paints the 22-unit lane it is about to cross.
+
+**The opening is longer and legible.** Charge recovery measured at **1.57 s**
+(slam 1.15, swing 0.95), during which the posture breaks, the chest lights up,
+hairline cracks run across the body, and `recallBonus` rises to 1.4×.
+
+### Is the charge fair?
+
+Same test, same sidestep, varying only what the player does and how fast they
+react:
+
+| reaction delay | walk only | walk + dash |
+| --- | --- | --- |
+| 0.25 s | **25% hit** | **0% hit** |
+| 0.35 s | **50% hit** | **0% hit** |
+| no reaction | **44% hit** | — |
+
+Walking is tight and gets worse the slower you are; dashing works outright.
+
+### Perfect Dodge
+
+v9 scored **one** perfect dodge across a whole run. The timing was real but the
+window was smaller than human reaction noise, and — worse — it was judged on
+*proximity*.
+
+> That was backwards. The charge travels 18 units THROUGH where the player was
+> standing, so a dodge that works ends with the two of them far apart: measured,
+> a clean sideways dash leaves **13 to 27 units** between them. The proximity
+> test credited the player who never moved and denied the one who did.
+
+It is judged on timing now, with a ±0.22 s window either side of the committed
+moment. The discrimination is what matters, and it holds:
+
+| dash timing | perfect dodges |
+| --- | --- |
+| never | 0 |
+| early, during the wind-up | **0** |
+| on the commit | **23 / 24** |
+| late, after it has passed | **0** |
+
+### Counter Recall
+
+Get out of the way of a charge, then answer it within 3 seconds. Measured: 22
+charge dodges produced **12 counters**. No banner and no score — a bell, a
+heavier hit stop, and one white stroke left across the ground (brief 20). Each
+one is logged as its own event:
+
+```json
+{ "t": 9.98, "type": "counter_recall", "bossAttack": "charge",
+  "recallHits": 71, "damage": 14.25, "secondsAfterDodge": 1.16,
+  "shikigamiCount": 100 }
+```
+
+---
+
+## Spread — measured, then left alone
+
+The brief asked for 10–20 uses in a 4–5 minute run, and was explicit that the
+cooldown should be the **last** thing touched. Measured: **17**, already inside
+the window, so the cooldown stays at 2.0 s.
+
+The one honest caveat: an autopilot cannot measure a habit. The 45 uses in the
+reference human run came from pressing SPACE whenever it came off cooldown, and
+nothing an autopilot does reproduces that. What the build can say is that a
+*pointless* spread still earns nothing — the setup feedback needs 40+ recall
+hits inside 4 s — and that `spreadSetupSuccesses` (11 of 17 here) is now in the
+log, so the next human run can be checked rather than guessed at.
+
+If it stays at 45, brief 34's 2.0 -> 2.5–3.0 is the next step.
 
 ---
 
@@ -106,6 +244,21 @@ otherwise, or every player repeats the tutorial for nothing.
 `Tutorial` in the menu replays it, `SKIP TUTORIAL` leaves at any time (and still
 records the timestamp, so skipping is not punished with a loop), `RESET TUTORIAL`
 is in the debug panel.
+
+**It does not end on a victory screen.** The tutorial is onboarding, not a mode
+with a win state, so finishing it produces no VICTORY, no fanfare and no stats
+panel -- the field empties, the flock comes home, one bell, one small line, and
+the arena fades up from the same curtain. The player should be thinking "right,
+now the real thing", not "I won".
+
+```
+last wave down -> flock returns -> bell -> one line, ~1.5s -> fade -> arena
+```
+
+Skipping gets the curtain but not the send-off. That distinction needed a fix of
+its own: `Tutorial.finish()` fired `onComplete` either way, so leaving early used
+to play the whole completion sequence for a lesson the player had just
+declined.
 
 Measured, autopiloted: **23 s** and all 8 steps, with the recall kill landing
 inside the recall step. A human reading each line will be nearer the 60–90 s the

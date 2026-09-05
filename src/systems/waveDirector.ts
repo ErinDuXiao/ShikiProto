@@ -44,7 +44,6 @@ export class WaveDirector {
 
   onEvent?: (e: WaveEvent) => void;
   onSpawn?: (r: SpawnRequest) => void;
-  onMidBoss?: () => void;
   onBoss?: () => void;
 
   /** Only used for the moving-column beat. */
@@ -116,9 +115,12 @@ export class WaveDirector {
         this.cluster(9, playerPos);
         this.line(6, playerPos);
         break;
-      case 'midboss':
-        this.onMidBoss?.();
-        this.ring(4, 20, playerPos);
+      case 'surge':
+        // A growth event, not a difficulty spike (v10 spec 8). Everything
+        // arrives close together and close in: one recall line covers most of
+        // it, and what it leaves behind is talismans.
+        this.cluster(10, playerPos);
+        this.ring(8, 17, playerPos);
         break;
       case 'boss':
         this.onBoss?.();

@@ -25,6 +25,8 @@ export class Hud {
   private objName = $('obj-name');
   private objSub = $('obj-sub');
   private skill = $('skillname');
+  private outro = $('outro');
+  private fade = $('fade');
   private end = $('end');
   private endTitle = $('end-title');
   private endStats = $('end-stats');
@@ -172,6 +174,31 @@ export class Hud {
     this.objective.classList.add('on');
   }
 
+  /** one small centred line -- the tutorial's send-off, not a result screen */
+  showOutro(text: string) {
+    this.outro.textContent = text;
+    this.outro.classList.add('on');
+  }
+
+  hideOutro() {
+    this.outro.classList.remove('on');
+  }
+
+  /**
+   * Curtain, used to hand the tutorial over to the arena without a hard cut.
+   * @param to 1 = fully black, 0 = clear
+   */
+  setFade(to: number, seconds: number) {
+    this.fade.style.transition = `opacity ${seconds}s linear`;
+    this.fade.style.opacity = String(to);
+  }
+
+  /** drop the curtain instantly, e.g. before a new run paints its first frame */
+  blackout() {
+    this.fade.style.transition = 'none';
+    this.fade.style.opacity = '1';
+  }
+
   showBanner(text: string, seconds = 2.4) {
     this.banner.textContent = text;
     this.banner.classList.add('on');
@@ -255,6 +282,8 @@ export class Hud {
   }
 
   reset() {
+    this.hideOutro();
+    this.setFade(0, 0.4);
     this.objective.classList.remove('on');
     this.end.classList.remove('on', 'win', 'lose');
     this.showBoss(false);

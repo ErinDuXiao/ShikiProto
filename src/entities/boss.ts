@@ -8,11 +8,24 @@ export type OniState = 'idle' | 'slam' | 'charge' | 'swing' | 'recover';
  * whole point of the fight: the dodge is not survival, it is what buys the
  * window.
  */
-const RECOVER = { slam: 1.35, charge: 1.15, swing: 1.0 };
+const RECOVER = { slam: 1.15, charge: 1.55, swing: 0.95 };
 /** a perfect dodge stretches the window rather than adding damage (spec 10) */
 const PERFECT_BONUS = 0.45;
-/** recall hits land harder while it is recovering (spec 11) */
+/** recall hits land harder while it is recovering (v10 spec 18) */
 const RECALL_VULNERABLE_MUL = 1.4;
+/**
+ * How far either side of the committed moment a dash still counts (v10 spec
+ * 22). v9 opened the window only once the hitbox was live, which measured out
+ * at a single perfect dodge across a whole run -- the timing was real but the
+ * margin was smaller than human reaction noise.
+ */
+const PERFECT_WINDOW = 0.22;
+/** a recall this soon after dodging a charge is a counter (v10 spec 19) */
+export const COUNTER_WINDOW = 3.0;
+/** the charge's wind-up, long enough to read and answer (v10 spec 14) */
+const CHARGE_WINDUP = 0.9;
+/** how far down the lane the charge tell is painted */
+const CHARGE_LEN = 22;
 
 /**
  * The Oni. Guards its front, so hammering it head-on with shikigami is a waste
@@ -28,10 +41,16 @@ export class Oni extends EnemyBase {
    * still be credited -- which teaches the wrong timing.
    */
   get swinging(): boolean {
-    if (this.state === 'charge') return this.sub === 1;
-    if (this.state === 'slam' || this.state === 'swing') return this.timer < 0.36;
+    if (this.dodgeGrace > 0) return true;
+    if (this.state === 'charge') return this.sub === 1 || this.timer < PERFECT_WINDOW;
+    if (this.state === 'slam' || this.state === 'swing') return this.timer < 0.36 + PERFECT_WINDOW;
     return false;
   }
+
+  /** keeps the window open just past the hit, so a late dash still reads */
+  private dodgeGrace = 0;
+  /** how far it has dropped into the charge stance */
+  private crouch = 0;
   /** set for the duration of one attack, cleared when the next is chosen */
   private attacking = false;
   /** set once per attack when the player dashed clear of it */
@@ -40,6 +59,15 @@ export class Oni extends EnemyBase {
   slamHitsTaken = 0;
   chargeHitsTaken = 0;
   swingHitsTaken = 0;
+  /** charges the player got out of the way of (v10 spec 38) */
+  chargeDodges = 0;
+  counterRecalls = 0;
+  counterRecallDamage = 0;
+  /** its own clock, so the counter window does not depend on the caller */
+  private clock = 0;
+  private chargeDodgedAt = -99;
+  private dashedThisAttack = false;
+  private chargeLanded = false;
   /** what the player is about to have to answer, for the debug read-out */
   private queued: OniState = 'idle';
   onPerfectDodge?: () => void;
@@ -52,6 +80,11 @@ export class Oni extends EnemyBase {
   private tell: THREE.Mesh;
   private arc: THREE.Mesh;
   private core: THREE.Mesh;
+  /** the ground line the charge is about to cross (v10 spec 14) */
+  private lane: THREE.Mesh;
+  /** chest glow shown only while it is planted and open (v10 spec 17) */
+  private weak: THREE.Mesh;
+  private cracks: THREE.Mesh;
   private baseScale = 1;
 
   /** set by GameManager so it can react to phase transitions */
@@ -141,6 +174,47 @@ export class Oni extends EnemyBase {
     this.arc.position.y = 0.08;
     scene.add(this.arc);
 
+    // The charge lane. A rectangle on the floor is the least ambiguous thing
+    // the game can say: this strip is about to be crossed, be somewhere else.
+    const lg = new THREE.PlaneGeometry(3.4, CHARGE_LEN);
+    lg.rotateX(-Math.PI / 2);
+    this.lane = new THREE.Mesh(
+      lg,
+      new THREE.MeshBasicMaterial({
+        color: 0xff7a2a,
+        transparent: true,
+        opacity: 0,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    this.lane.visible = false;
+    scene.add(this.lane);
+
+    // Weak state. Both of these live on the body, so the opening is legible
+    // from the Oni itself rather than only from a HUD state.
+    this.weak = new THREE.Mesh(
+      new THREE.SphereGeometry(0.9, 12, 12),
+      new THREE.MeshBasicMaterial({ color: 0xfff2cc, transparent: true, opacity: 0, depthWrite: false }),
+    );
+    this.weak.position.set(0, 3.4, 1.2);
+    this.weak.visible = false;
+    this.group.add(this.weak);
+
+    this.cracks = new THREE.Mesh(
+      new THREE.CylinderGeometry(2.02, 2.72, 4.7, 6, 1, true),
+      new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0,
+        wireframe: true,
+        depthWrite: false,
+      }),
+    );
+    this.cracks.position.y = 2.4;
+    this.cracks.visible = false;
+    this.group.add(this.cracks);
+
     this.group.position.copy(this.pos);
     scene.add(this.group);
   }
@@ -161,6 +235,8 @@ export class Oni extends EnemyBase {
   }
 
   update(dt: number, world: EnemyWorld) {
+    this.clock += dt;
+    this.dodgeGrace = Math.max(0, this.dodgeGrace - dt);
     const hpFrac = this.hp / this.maxHp;
     if (this.phase === 1 && hpFrac <= 0.6) this.setPhase(2, world);
     else if (this.phase === 2 && hpFrac <= 0.25) this.setPhase(3, world);
@@ -232,29 +308,49 @@ export class Oni extends EnemyBase {
       case 'charge': {
         this.timer -= dt;
         if (this.sub === 0) {
-          // wind up
-          tellMat.color.setHex(0xffaa22);
-          tellMat.opacity = 0.55;
-          this.tell.position.set(
-            this.pos.x + this.chargeDir.x * 7,
-            0.07,
-            this.pos.z + this.chargeDir.z * 7,
+          // Wind-up (v10 spec 14). The charge is the Oni's signature move, so
+          // the tell is the loudest thing in the fight: it drops into a crouch,
+          // locks onto the player, and paints the lane it is about to cross.
+          const t = 1 - Math.max(0, this.timer) / CHARGE_WINDUP;
+          tellMat.opacity = 0;
+          this.lane.visible = true;
+          this.lane.position.set(
+            this.pos.x + this.chargeDir.x * CHARGE_LEN * 0.5,
+            0.06,
+            this.pos.z + this.chargeDir.z * CHARGE_LEN * 0.5,
           );
-          this.tell.scale.setScalar(2.4);
+          this.lane.rotation.y = Math.atan2(this.chargeDir.x, this.chargeDir.z);
+          (this.lane.material as THREE.MeshBasicMaterial).opacity = 0.16 + t * 0.5;
+          // low stance: it sinks and leans into the run
+          this.body.rotation.x = t * 0.34;
+          this.crouch = t * 0.5;
           if (this.timer <= 0) {
             this.sub = 1;
             this.timer = 0.6;
-            world.sfx.dash();
+            world.sfx.bigHit(14);
           }
         } else {
           tellMat.opacity = 0;
+          (this.lane.material as THREE.MeshBasicMaterial).opacity = 0.32;
           const sp = 30;
           this.pos.x += this.chargeDir.x * sp * dt;
           this.pos.z += this.chargeDir.z * sp * dt;
-          if (dist < 3.4 && world.hitPlayer(12, this.pos)) this.chargeHitsTaken++;
+          if (dist < 3.7 && world.hitPlayer(12, this.pos)) {
+            this.chargeHitsTaken++;
+            this.chargeLanded = true;
+          }
           if (this.timer <= 0) {
             world.fx.shake(0.3);
+            this.lane.visible = false;
+            this.body.rotation.x = 0;
+            this.crouch = 0;
             this.sub = 0;
+            // v10 spec 19: getting out of the way of a charge opens a window
+            // the player is meant to answer with a recall.
+            if (this.dashedThisAttack && !this.chargeLanded) {
+              this.chargeDodges++;
+              this.chargeDodgedAt = this.clock;
+            }
             this.enterRecover('charge', world);
           }
         }
@@ -283,15 +379,29 @@ export class Oni extends EnemyBase {
         break;
       }
       case 'recover': {
-        // Planted, breathing hard, wide open. The tell is a soft ring rather
-        // than a warning colour so it reads as "now" and not "danger".
+        // Planted, breathing hard, wide open (v10 spec 17). The tell is a soft
+        // ring rather than a warning colour so it reads as "now", not
+        // "danger", and the body itself shows the opening: the posture breaks,
+        // the chest lights up, and hairline cracks run across it.
         this.timer -= dt;
         tellMat.color.setHex(0xffd98a);
-        tellMat.opacity = 0.1 + Math.sin(performance.now() * 0.012) * 0.05;
+        tellMat.opacity = 0.1 + Math.sin(this.clock * 12) * 0.05;
         this.tell.position.set(this.pos.x, 0.07, this.pos.z);
         this.tell.scale.setScalar(4.6);
+        this.body.rotation.x = 0.2;
+        this.body.rotation.z = 0.07;
+        this.weak.visible = true;
+        (this.weak.material as THREE.MeshBasicMaterial).opacity =
+          0.5 + Math.sin(this.clock * 9) * 0.18;
+        this.cracks.visible = true;
+        (this.cracks.material as THREE.MeshBasicMaterial).opacity =
+          0.34 + Math.sin(this.clock * 7) * 0.12;
         if (this.timer <= 0) {
           tellMat.opacity = 0;
+          this.body.rotation.x = 0;
+          this.body.rotation.z = 0;
+          this.weak.visible = false;
+          this.cracks.visible = false;
           this.recallBonus = 1;
           this.state = 'idle';
           this.timer = this.restTime();
@@ -302,6 +412,8 @@ export class Oni extends EnemyBase {
 
     this.integrateKnock(dt);
     this.group.position.copy(this.pos);
+    // applied after the position copy, which would otherwise erase it
+    this.group.position.y -= this.crouch;
     this.group.rotation.y = Math.atan2(this.facing.x, this.facing.z);
 
     this.flash = Math.max(0, this.flash - dt * 5);
@@ -330,18 +442,24 @@ export class Oni extends EnemyBase {
    */
   private pickAttack(world: EnemyWorld, dist: number) {
     this.perfectThisAttack = false;
+    this.dashedThisAttack = false;
+    this.chargeLanded = false;
     this.attacking = true;
     const roll = Math.random();
-    if (dist > 9 || (dist > 6 && roll > 0.62)) {
+    // v10 spec 13: the charge is the Oni's representative attack, so it gets
+    // the widest band. At v9's thresholds the Oni closed to 5.2 and then could
+    // only swing or slam, and the move the whole fight is built around barely
+    // came out.
+    if (dist > 8 || roll > 0.4) {
       this.state = 'charge';
       this.sub = 0;
-      this.timer = 0.8;
+      this.timer = CHARGE_WINDUP;
       const dx = world.playerPos.x - this.pos.x;
       const dz = world.playerPos.z - this.pos.z;
       const d = Math.hypot(dx, dz) || 1;
       this.chargeDir.set(dx / d, 0, dz / d);
       this.facing.copy(this.chargeDir);
-    } else if (dist < 8 && roll > 0.42) {
+    } else if (dist < 8 && roll > 0.2) {
       this.state = 'swing';
       this.timer = 0.8;
     } else {
@@ -358,6 +476,7 @@ export class Oni extends EnemyBase {
    */
   private enterRecover(from: 'slam' | 'charge' | 'swing', world: EnemyWorld) {
     this.attacking = false;
+    this.dodgeGrace = PERFECT_WINDOW;
     this.state = 'recover';
     this.timer = RECOVER[from] + (this.perfectThisAttack ? PERFECT_BONUS : 0);
     this.recallBonus = RECALL_VULNERABLE_MUL;
@@ -371,6 +490,30 @@ export class Oni extends EnemyBase {
   /** the game calls this when the player dashed clear of a committed attack */
   notePerfectDodge() {
     if (this.attacking && this.swinging) this.perfectThisAttack = true;
+  }
+
+  /** the player was inside dash i-frames at some point during this attack */
+  noteDash() {
+    if (this.attacking) this.dashedThisAttack = true;
+  }
+
+  /**
+   * A recall landed. Returns true if it arrived inside the window a dodged
+   * charge opens, which is the exchange the fight is built around (v10 spec
+   * 19/20) -- dodge, then answer.
+   */
+  noteRecallHit(damage: number): boolean {
+    if (this.clock - this.chargeDodgedAt > COUNTER_WINDOW) return false;
+    this.chargeDodgedAt = -99;
+    this.counterRecalls++;
+    this.counterRecallDamage += damage;
+    return true;
+  }
+
+  /** seconds since the charge the player dodged, or null */
+  get sinceChargeDodge(): number | null {
+    const d = this.clock - this.chargeDodgedAt;
+    return d > COUNTER_WINDOW ? null : Math.round(d * 100) / 100;
   }
 
   get nextAttack(): string {
@@ -397,6 +540,9 @@ export class Oni extends EnemyBase {
   }
 
   override dispose() {
+    this.scene.remove(this.lane);
+    this.lane.geometry.dispose();
+    (this.lane.material as THREE.Material).dispose();
     this.scene.remove(this.arc);
     this.arc.geometry.dispose();
     (this.arc.material as THREE.Material).dispose();

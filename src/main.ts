@@ -31,20 +31,28 @@ let lastMode: GameMode = 'arena';
 let runToken = 0;
 
 /** Every run gets a brand new Game, and so a brand new sessionId (spec 39). */
-function startRun(mode: GameMode = lastMode) {
+function startRun(mode: GameMode = lastMode, fromBlack = false) {
   const token = ++runToken;
   lastMode = mode;
   start.classList.add('off');
   game?.dispose();
+  // the Game constructor calls hud.reset(), which clears the curtain -- so the
+  // curtain has to be dropped after it, not before
   game = new Game(renderer, hud, debug, sfx, mode);
+  if (fromBlack) hud.blackout();
+  // raise the curtain once the new run has actually drawn something
+  game.onFirstFrame = () => {
+    if (runToken === token) hud.setFade(0, fromBlack ? 0.9 : 0.25);
+  };
   // finishing the tutorial rolls straight into the arena rather than dumping
   // the player back on a menu (spec 33)
   if (mode === 'tutorial') {
     game.onEnd = (victory) => {
       if (!victory) return;
-      window.setTimeout(() => {
-        if (runToken === token) startRun('arena');
-      }, 900);
+      // The tutorial has already faded to black by the time it ends, so the
+      // hand-off is immediate and the arena fades up from the same curtain --
+      // one continuous transition rather than a result screen and a cut.
+      if (runToken === token) startRun('arena', true);
     };
   }
 }

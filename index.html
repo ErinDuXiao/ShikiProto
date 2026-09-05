@@ -129,6 +129,26 @@
   #objective b { display: block; font-size: 15px; letter-spacing: .34em; font-weight: 400; }
   #objective span { display: block; font-size: 9px; letter-spacing: .28em; color: var(--dim); margin-top: 4px; }
 
+  /* The tutorial's send-off. Deliberately small and quiet: the tutorial is
+     onboarding, not a mode you win, so it gets one line rather than a result
+     screen. */
+  #outro {
+    /* a touch above dead centre: the flock reforms around the player there,
+       and the line was landing right on top of it */
+    left: 50%; top: 43%; transform: translate(-50%, -50%); text-align: center;
+    font-size: 14px; letter-spacing: .3em; color: var(--ink);
+    opacity: 0; transition: opacity .5s; white-space: nowrap;
+    text-shadow: 0 0 18px rgba(255,255,255,.25);
+  }
+  #outro.on { opacity: .85; }
+
+  /* one shared curtain, so the tutorial can hand over to the arena without a
+     cut in the middle of the transition */
+  #fade {
+    position: fixed; inset: 0; pointer-events: none; z-index: 12;
+    background: #05060a; opacity: 0;
+  }
+
   #banner {
     left: 50%; top: 21%; transform: translateX(-50%);
     font-size: 26px; letter-spacing: .34em; text-align: center;
@@ -366,6 +386,8 @@
   <div id="marker" class="ui"><i></i><em id="marker-d"></em></div>
   <div id="objective" class="ui"><b id="obj-name"></b><span id="obj-sub"></span></div>
   <div id="banner" class="ui"></div>
+  <div id="outro" class="ui"></div>
+  <div id="fade"></div>
   <div id="skillname" class="ui"></div>
 
   <div id="debugbtn">DEBUG</div>

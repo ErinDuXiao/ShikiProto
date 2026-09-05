@@ -17,7 +17,7 @@ export enum SType {
 /** Arena keeps the old combat test reachable; Kyoto is the v7 slice (spec 47). */
 export type GameMode = 'arena' | 'kyoto' | 'tutorial';
 
-export const VERSION = 'prototype_v9';
+export const VERSION = 'prototype_v10';
 
 /** Spider Bind is disabled, not deleted (spec 19). */
 export const SPIDER_ENABLED = false;
@@ -53,17 +53,30 @@ export const CONTROLS: SkillSlot[] = [
  */
 export interface WaveEvent {
   t: number;
-  kind: 'intro' | 'rift' | 'elite' | 'midboss' | 'fourWay' | 'cluster' | 'boss';
+  kind: 'intro' | 'rift' | 'elite' | 'surge' | 'fourWay' | 'cluster' | 'boss';
   label: string;
 }
 
+/**
+ * v10: the beats now serve the growth curve.
+ *
+ * The 135 s mid-boss was measured ending runs at ~222 s with the flock at 84 --
+ * the Oni arrived while the player was still growing, and killing it closed the
+ * run before 100 shikigami was reachable at all. It is replaced by a SURGE: a
+ * deliberately large, tightly packed wave, which is a fat recall line and a
+ * heap of talismans rather than a wall (v10 spec 8).
+ *
+ * The Oni's own arrival is no longer scripted here -- it comes from the growth
+ * condition in Game.updateOni (210 s or 80 shikigami). The 330 s entry is only
+ * a backstop for a player who somehow reaches it without either.
+ */
 export const TIMELINE: WaveEvent[] = [
   { t: 0, kind: 'intro', label: '' },
   { t: 45, kind: 'rift', label: 'RIFT' },
   { t: 80, kind: 'elite', label: 'ELITE' },
-  { t: 135, kind: 'midboss', label: 'ONI' },
-  { t: 195, kind: 'fourWay', label: 'FOUR DIRECTIONS' },
-  { t: 240, kind: 'cluster', label: 'SWARM' },
-  { t: 285, kind: 'rift', label: 'RIFT' },
+  { t: 120, kind: 'fourWay', label: 'FOUR DIRECTIONS' },
+  { t: 155, kind: 'surge', label: '百鬼' },
+  { t: 195, kind: 'cluster', label: 'SWARM' },
+  { t: 250, kind: 'surge', label: '百鬼' },
   { t: 330, kind: 'boss', label: 'ONI' },
 ];

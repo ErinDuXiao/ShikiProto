@@ -52,7 +52,15 @@ export interface V5Params {
 export const DEFAULT_V5: Readonly<V5Params> = Object.freeze({
   initialShikigami: 30,
   maxShikigami: 150,
-  pickupDropRate: 0.5,
+  /**
+   * v10 spec 5/6: the one growth dial turned, and only a little.
+   *
+   * Measured on the autopilot, 0.5 landed the flock at a peak of 96 -- 50 at
+   * 91 s and 75 at 182 s, both a shade behind the target curve, and 100 never
+   * reached at all. Everything else about the economy (reward sizes, kill
+   * rate, enemy HP) is untouched, so the power fantasy is unchanged.
+   */
+  pickupDropRate: 0.6,
   rewardSmall: 1,
   rewardMedium: 3,
   rewardLarge: 5,
