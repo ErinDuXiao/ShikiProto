@@ -345,15 +345,9 @@ export class Game {
         break;
       case 'release':
         break;
-      case 'between': {
-        // one dummy dropped between the player and where the flock went
-        const c = this.swarm.swarmCenter;
-        const dx = c.x - p.x;
-        const dz = c.z - p.z;
-        const d = Math.hypot(dx, dz) || 1;
-        this.spawnDummy(p.x + (dx / d) * 9, p.z + (dz / d) * 9);
+      case 'between':
+        this.spawnLessonDummy();
         break;
-      }
       case 'recall':
         break;
       case 'dash':
@@ -387,6 +381,55 @@ export class Game {
   /** a plain yokai, unmodified; the tutorial never softens the enemy */
   private spawnDummy(x: number, z: number) {
     this.spawnYokai(x, z, false);
+  }
+
+  /**
+   * One dummy, dropped between the player and wherever the flock is -- the
+   * shape both the BETWEEN and RECALL lessons are about.
+   */
+  private spawnLessonDummy() {
+    const p = this.player.pos;
+    const c = this.swarm.swarmCenter;
+    let dx = c.x - p.x;
+    let dz = c.z - p.z;
+    let d = Math.hypot(dx, dz);
+    // the flock can be sitting on the player, e.g. right after a recall
+    if (d < 0.5) {
+      dx = this.player.facing.x;
+      dz = this.player.facing.z;
+      d = Math.hypot(dx, dz) || 1;
+    }
+    this.spawnDummy(p.x + (dx / d) * 9, p.z + (dz / d) * 9);
+  }
+
+  /**
+   * BETWEEN and RECALL are the only two lessons that need something on the
+   * field, and both used to sit forever if that something died to anything
+   * other than the player's answer.
+   *
+   * From a reported run: the dummy went down to 騰蛇 foxfire a beat after the
+   * first pull, so `killedEnemies` was 0, the recall step kept waiting for a
+   * kill that could no longer happen, and the next seven recalls hit nothing.
+   * Reproduced as 30 s on an empty field with no progress. The lesson still
+   * requires a real recall kill -- it just guarantees there is something to
+   * kill.
+   */
+  private refillTimer = 0;
+
+  private keepLessonTargets(dt: number, step: StepId) {
+    if (step !== 'between' && step !== 'recall') {
+      this.refillTimer = 0;
+      return;
+    }
+    if (this.aliveCount() > 0) {
+      this.refillTimer = 0;
+      return;
+    }
+    // a short beat first, so a legitimate kill still reads as a kill
+    this.refillTimer += dt;
+    if (this.refillTimer < 0.9) return;
+    this.refillTimer = 0;
+    this.spawnLessonDummy();
   }
 
   private updateTutorial(dt: number) {
@@ -423,6 +466,7 @@ export class Game {
     }
     t.update(dt, this.player.pos, this.aliveCount(), behind, this.player.dashCount);
     if (t.step === 'release') t.noteRelease(this.swarm.looseCount);
+    this.keepLessonTargets(dt, t.step);
   }
 
   /**

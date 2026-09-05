@@ -255,6 +255,16 @@ now the real thing", not "I won".
 last wave down -> flock returns -> bell -> one line, ~1.5s -> fade -> arena
 ```
 
+**The two lessons that need a target now keep one.** BETWEEN and RECALL are the
+only steps that depend on something being on the field, and both used to sit
+forever if that something died to anything other than the player's answer. From
+a reported run: the dummy went down to 騰蛇 foxfire a beat after the first pull,
+so `killedEnemies` was 0, the recall step kept waiting for a kill that could no
+longer happen, and the next seven recalls hit nothing. Reproduced as 30 s on an
+empty field with no progress. The lesson still requires a real recall kill --
+there is now always something to kill, replaced after a 0.9 s beat so a
+legitimate kill still lands as a kill.
+
 Skipping gets the curtain but not the send-off. That distinction needed a fix of
 its own: `Tutorial.finish()` fired `onComplete` either way, so leaving early used
 to play the whole completion sequence for a lesson the player had just
