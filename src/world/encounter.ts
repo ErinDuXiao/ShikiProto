@@ -20,6 +20,9 @@ export class Encounter {
   private timer = 0.9;
   private beat = 0;
   private lull = 0;
+  /** the mid-encounter breather happens exactly once, and is not paid for by
+   *  skipping enemies (see update) */
+  private lullTaken = false;
   private bossSpawned = false;
   finished = false;
   elapsed = 0;
@@ -66,13 +69,17 @@ export class Encounter {
       return;
     }
     if (
+      !this.lullTaken &&
       this.beat > 0 &&
       this.released > this.def.budget * 0.55 &&
-      this.released < this.def.budget * 0.62 &&
       aliveCount <= 2
     ) {
+      // A one-shot flag, NOT a jump in `released`. Pushing `released` forward
+      // to 62% of the budget was silently deleting every enemy in between, so
+      // an encounter released fewer yokai than its LocationDef.budget says and
+      // the pacing numbers described a fight that never happened.
+      this.lullTaken = true;
       this.lull = 2.6;
-      this.released = Math.ceil(this.def.budget * 0.62);
       return;
     }
 

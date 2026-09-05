@@ -23,8 +23,16 @@ let game: Game | null = null;
 
 let lastMode: GameMode = 'arena';
 
+/**
+ * Bumped by every navigation. The tutorial's hand-off to the arena is a timer,
+ * and without this a player who hit RETRY or MENU during that second had the
+ * stale callback dispose their new run and drop them into the arena instead.
+ */
+let runToken = 0;
+
 /** Every run gets a brand new Game, and so a brand new sessionId (spec 39). */
 function startRun(mode: GameMode = lastMode) {
+  const token = ++runToken;
   lastMode = mode;
   start.classList.add('off');
   game?.dispose();
@@ -33,12 +41,16 @@ function startRun(mode: GameMode = lastMode) {
   // the player back on a menu (spec 33)
   if (mode === 'tutorial') {
     game.onEnd = (victory) => {
-      if (victory) setTimeout(() => startRun('arena'), 900);
+      if (!victory) return;
+      window.setTimeout(() => {
+        if (runToken === token) startRun('arena');
+      }, 900);
     };
   }
 }
 
 function toStartScreen() {
+  runToken++;
   game?.dispose();
   game = null;
   hud.reset();

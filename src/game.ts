@@ -62,6 +62,16 @@ export class Game {
   private logger = new PlayLogger();
   private enemies: EnemyBase[] = [];
   private boss: Oni | null = null;
+  /**
+   * What the Oni currently on the field is FOR.
+   *
+   * There are three places an Oni can come from -- the 135s mid-boss beat, the
+   * automatic arena spawn, and a Kyoto location -- and each one used to write
+   * straight into `this.boss`. Overlapping spawns left the earlier Oni alive
+   * but untracked, and because victory was decided by `time >= 300`, killing
+   * any leftover boss late in a run ended it. The role decides that now.
+   */
+  private bossRole: 'mid' | 'final' | 'location' | null = null;
   private core: GravityCore | null = null;
 
   private time = 0;
@@ -107,6 +117,9 @@ export class Game {
   ) {
     resetEnemyIds();
     resetField();
+    // every timestamp in the log is measured against the simulation clock, not
+    // the wall clock, so a backgrounded tab cannot desynchronise them
+    this.logger.clock = () => this.time;
     this.scene.background = new THREE.Color(0x05060a);
     // Kyoto needs to see the next disturbance from the far end of a street, so
     // the fog has to reach much further than the arena's did.
@@ -177,8 +190,14 @@ export class Game {
       // no UI shout; the quiet is the message
       this.hud.hideBanner();
     };
-    this.waves.onMidBoss = () => this.spawnOni(true);
-    this.waves.onBoss = () => this.spawnOni(false);
+    // The mid-boss beat is skipped once the real Oni is out -- on a fast run
+    // the arena Oni arrives at 75 shikigami, well before 135s.
+    this.waves.onMidBoss = () => {
+      if (!this.oniSpawned) this.spawnOni('mid');
+    };
+    // The scripted boss beat and the automatic spawn are the same event, so
+    // they share one idempotent entry point rather than racing each other.
+    this.waves.onBoss = () => this.spawnArenaOni();
 
     this.world = {
       playerPos: this.player.pos,
@@ -282,8 +301,9 @@ export class Game {
         break;
       case 'dash':
         // the real Oni, so the tell the player learns here is the one they
-        // will meet in the arena (spec 25)
-        this.spawnOni(false);
+        // will meet in the arena (spec 25). 'location' rather than 'final':
+        // killing it teaches the dodge, it does not win the tutorial.
+        this.spawnOni('location');
         break;
       case 'gravity':
         for (let i = 0; i < 4; i++) {
@@ -338,6 +358,20 @@ export class Game {
     if (t.step === 'release') t.noteRelease(this.swarm.looseCount);
   }
 
+  /**
+   * Kyoto rewards write into the module-global `v5`, which outlives the run.
+   * Clearing the shrine three times used to leave orbitDuration at 1.2^3 for
+   * every arena and tutorial run afterwards. The values are captured once,
+   * before the first reward lands, and put back in dispose(). Only the two
+   * keys a reward can touch are restored, so the debug sliders are unaffected.
+   */
+  private rewardBaseline: { orbitDuration: number; tengjaRatio: number } | null = null;
+
+  private captureRewardBaseline() {
+    if (this.rewardBaseline) return;
+    this.rewardBaseline = { orbitDuration: v5.orbitDuration, tengjaRatio: v5.tengjaRatio };
+  }
+
   // ----------------------------------------------------------- Kyoto wiring
 
   private setupJourney() {
@@ -349,9 +383,11 @@ export class Game {
     // rewards are applied by the location itself; these are the only hooks it
     // is allowed to reach into the engine through (spec 19)
     rewardHooks.orbitDuration = (mul) => {
+      this.captureRewardBaseline();
       v5.orbitDuration *= mul;
     };
     rewardHooks.tengjaRatio = (add) => {
+      this.captureRewardBaseline();
       v5.tengjaRatio = Math.min(0.6, v5.tengjaRatio + add);
     };
 
@@ -367,7 +403,7 @@ export class Game {
       shikigami: this.swarm.activeCount,
     });
     j.onSpawn = (r) => this.spawnYokai(r.x, r.z, r.elite === true);
-    j.onBoss = () => this.spawnOni(false);
+    j.onBoss = () => this.spawnOni('location');
     j.onArrive = (loc) => this.arriveAt(loc);
     j.onCleared = (loc) => this.clearedAt(loc);
     j.onDepart = (to) => this.departFor(to);
@@ -484,6 +520,21 @@ export class Game {
   update(dtRaw: number) {
     this.fx.update(dtRaw);
     const dt = this.fx.hitStop > 0 ? dtRaw * 0.06 : dtRaw;
+
+    // The run is over: hold the world exactly as the log describes it and keep
+    // only what the end screen needs. Previously enemies, combat, pickups and
+    // the swarm all carried on behind the overlay, so the field the player was
+    // looking at kept drifting away from the numbers they were reading -- and
+    // an abandoned tab burned a full simulation forever.
+    if (this.ended) {
+      this.rig.update(dtRaw, this.player.pos, this.swarm.swarmCenter);
+      this.fx.applyShake(this.rig.camera, this.time);
+      this.hud.update(dtRaw, this.movedOnce);
+      this.renderer.render(this.scene, this.rig.camera);
+      this.rig.restore();
+      return;
+    }
+
     this.time += dt;
 
     this.input.updateAim(this.rig.camera);
@@ -769,24 +820,25 @@ export class Game {
     }
   }
 
-  /** Debug / tutorial entry point too. */
+  /** Debug / tutorial entry point too. Idempotent: the wave script and the
+   *  automatic trigger both call it. */
   spawnArenaOni() {
     if (this.oniSpawned) return;
     this.oniSpawned = true;
-    this.oniStart = this.time;
-    this.bossDamageAtSpawn = this.logger.damageTaken;
-    this.logger.bossEncountered = true;
-    this.spawnOni(false);
-    const b = this.boss;
-    if (b) {
-      b.onPerfectDodge = () => {
-        this.fx.stop(0.05);
-        this.fx.ring(this.player.pos.x, this.player.pos.z, 0.5, 6, 0.3, 0xffe6a8);
-        this.sfx.seal();
-        this.hud.showSkill('見切り  PERFECT');
-      };
-      b.onTelegraph = () => this.sfx.hit(0.22);
+
+    // A slow player can still be fighting the 135s mid-boss when the real Oni
+    // becomes due. PROMOTE that fight rather than stacking a second Oni on top
+    // of it -- and rather than waiting for a kill that might never come, which
+    // measured out as a run reaching 340s with 82 enemies on the field and no
+    // climax at all. Its HP is left where it is: a player who is behind should
+    // not be handed a fresh 1200 to chew through.
+    if (this.boss && this.boss.alive) {
+      this.bossRole = 'final';
+      this.hud.showBanner('鬼', 2.4);
+      return;
     }
+
+    this.spawnOni('final');
     this.waves.breathe(2.5);
     this.hud.showBanner('鬼', 2.4);
     this.fx.screenFlash(0.18);
@@ -1056,33 +1108,58 @@ export class Game {
     this.fx.ring(x, z, 0.5, elite ? 6 : 3.5, 0.35, 0xff4433);
   }
 
-  private spawnOni(mid: boolean) {
+  /** @returns the Oni, or null if one is already on the field */
+  private spawnOni(role: 'mid' | 'final' | 'location'): Oni | null {
+    // Only ever one at a time. Two live Oni meant the HUD bar, the Perfect
+    // Dodge check and every boss statistic followed the newer one while the
+    // older one went on hitting the player unrecorded.
+    if (this.boss && this.boss.alive) return null;
     const b = new Oni(this.scene, 0, -20);
-    if (mid) {
+    if (role === 'mid') {
       // an earlier, lighter encounter so the run does not sag before the boss
       b.maxHp = b.hp = 900;
     }
     this.boss = b;
+    this.bossRole = role;
     this.enemies.push(b);
+    if (role !== 'location') {
+      this.oniStart = this.time;
+      this.bossDamageAtSpawn = this.logger.damageTaken;
+      this.logger.bossEncountered = true;
+    }
+    b.onPerfectDodge = () => {
+      this.fx.stop(0.05);
+      this.fx.ring(this.player.pos.x, this.player.pos.z, 0.5, 6, 0.3, 0xffe6a8);
+      this.sfx.seal();
+      this.hud.showSkill('見切り  PERFECT');
+    };
+    b.onTelegraph = () => this.sfx.hit(0.22);
     this.hud.showBoss(true);
     this.hud.setBoss(b.hp, b.maxHp, 1);
     this.fx.ring(b.pos.x, b.pos.z, 1, 18, 0.7, 0xff2a1a);
     this.fx.shake(0.8);
     this.sfx.bigHit(30);
+    return b;
   }
 
   private handleKill(e: EnemyBase) {
     this.pickups.dropFor(e.pos.x, e.pos.z, e.isBoss);
-    if (e.isBoss) {
-      const last = this.time >= 300;
-      if (!last) {
-        this.boss = null;
-        this.hud.showBoss(false);
-        return;
-      }
-      if (this.recall.active && this.swarm.activeCount >= 80) this.startFinish();
-      else this.endGame(true);
+    if (!e.isBoss) return;
+    // Only the run's own final Oni ends the run. A mid-boss, a Kyoto location
+    // boss, or a stray left over from an overlapping spawn just goes down.
+    const role = e === this.boss ? this.bossRole : null;
+    if (role !== 'final') {
+      if (e === this.boss) this.clearBoss();
+      return;
     }
+    if (this.recall.active && this.swarm.activeCount >= 80) this.startFinish();
+    else this.endGame(true);
+  }
+
+  private clearBoss() {
+    this.boss = null;
+    this.bossRole = null;
+    this.hud.showBoss(false);
   }
 
   private reapEnemies() {
@@ -1093,10 +1170,9 @@ export class Game {
       this.combat.forget(e.id);
       e.dispose();
       this.enemies.splice(i, 1);
-      if (e.isBoss) {
+      if (e === this.boss) {
         this.keepOniCounters();
-        this.boss = null;
-        this.hud.showBoss(false);
+        this.clearBoss();
       }
     }
   }
@@ -1159,7 +1235,7 @@ export class Game {
     this.logger.bossFightDuration = this.oniSpawned ? round2(this.time - this.oniStart) : 0;
     if (this.recall.active) this.finishRecall();
     // the boss finisher gets here before the encounter notices it is clear
-    this.journey?.closeCurrent(this.time);
+    this.journey?.closeCurrent(this.time, victory);
     // single finalise point: victory and the end screen both route through here
     const log = this.logger.finalize(() =>
       this.buildLog(victory ? 'victory' : 'defeat', victory),
@@ -1253,6 +1329,10 @@ export class Game {
   }
 
   dispose() {
+    if (this.rewardBaseline) {
+      Object.assign(v5, this.rewardBaseline);
+      this.rewardBaseline = null;
+    }
     this.input.dispose();
     this.fx.dispose();
     this.swarm.dispose();

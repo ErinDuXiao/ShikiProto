@@ -31,6 +31,7 @@ export interface LocationEvent {
     | 'locationEntered'
     | 'locationCombatStarted'
     | 'locationCombatEnded'
+    | 'locationCombatAborted'
     | 'locationExited';
   location: string;
 }
@@ -244,7 +245,7 @@ export class Journey {
     const enc = new Encounter(loc);
     enc.onSpawn = (s) => this.onSpawn?.(s);
     enc.onBoss = () => this.onBoss?.();
-    enc.onCleared = () => this.finishEncounter(time + this.combatClock);
+    enc.onCleared = () => this.finishEncounter(time + this.combatClock, true);
     this.encounter = enc;
 
     this.onArrive?.(loc);
@@ -262,13 +263,21 @@ export class Journey {
     void time;
   }
 
-  private finishEncounter(time: number) {
+  /**
+   * @param cleared false when the fight ended because the player lost. The
+   * combat is still worth recording -- how long they survived and what it cost
+   * is the interesting part -- but a defeat is not a clear, so it must not
+   * count towards `locationsCleared`, hand out the location's reward, or fire
+   * `onCleared`.
+   */
+  private finishEncounter(time: number, cleared: boolean) {
     const loc = this.current;
     if (!loc) return;
-    this.phase = 'calm';
-    this.calmClock = CALM_TIME;
-    this.locationsCleared++;
-    this.events.push({ t: r2(time), type: 'locationCombatEnded', location: loc.id });
+    this.events.push({
+      t: r2(time),
+      type: cleared ? 'locationCombatEnded' : 'locationCombatAborted',
+      location: loc.id,
+    });
 
     const a = this.probeAtStart;
     const b = this.probe?.() ?? null;
@@ -288,6 +297,11 @@ export class Journey {
       });
     }
     this.probeAtStart = null;
+    if (!cleared) return;
+
+    this.phase = 'calm';
+    this.calmClock = CALM_TIME;
+    this.locationsCleared++;
     loc.reward?.apply();
     this.onCleared?.(loc);
   }
@@ -297,9 +311,9 @@ export class Journey {
    * before the encounter can notice it is over, which otherwise left the last
    * location out of the log entirely.
    */
-  closeCurrent(time: number) {
+  closeCurrent(time: number, cleared: boolean) {
     if (this.phase !== 'combat' || !this.current) return;
-    this.finishEncounter(time);
+    this.finishEncounter(time, cleared);
   }
 
   private updateCalm(dt: number, time: number) {

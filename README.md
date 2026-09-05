@@ -585,6 +585,103 @@ Two peak figures are logged, and they mean different things:
 
 ---
 
+## Fixed after the v9 review
+
+An external review of the v9 tree turned up seven defects. All seven were
+reproduced before being touched and measured again afterwards.
+
+### The arena could run three bosses at once
+
+Three separate places wrote straight into `this.boss` — the 135 s mid-boss beat,
+the automatic Oni at 195 s / 75 shikigami, and the 330 s boss beat — while the
+Oni already on the field stayed alive in `enemies`. The HUD bar, the Perfect
+Dodge check and every boss statistic followed whichever came last; the earlier
+Oni went on hitting the player, unrecorded.
+
+Victory made it worse. It was decided by `time >= 300`, so killing *any*
+leftover boss late in a run ended it — including a Kyoto location boss.
+
+There is now one Oni at a time and each carries a **role**:
+
+| role | comes from | killing it |
+| --- | --- | --- |
+| `mid` | the 135 s beat | drops loot, nothing else |
+| `final` | the automatic spawn / the 330 s beat | ends the run |
+| `location` | a Kyoto location, the tutorial's dash step | drops loot, nothing else |
+
+> The first version of this fix made things worse, and the long-run measurement
+> caught it. Refusing to spawn while a boss stands meant a mid-boss the player
+> never killed blocked the real Oni **forever** — a measured run reached 342 s
+> with 82 enemies on the field and no climax. A mid-boss still standing when the
+> real Oni is due is now **promoted** rather than replaced: same fight, HP left
+> where it is, role upgraded. Measured: `mid@135 → final@195`, one Oni
+> throughout. A player who kills the mid-boss in time still meets a fresh 1200.
+
+### The game kept playing behind the end screen
+
+`ended` gated the player's actions and wave spawning — and nothing else. The
+swarm, enemies, pickups, combat and cooldowns all kept ticking, so the field the
+player was looking at drifted away from the numbers they were reading, and an
+abandoned tab simulated forever. Measured after the fix: 30 s of frames on the
+end screen change the clock, enemy count, damage and player position by nothing
+at all.
+
+### Kyoto rewards followed the player into the next run
+
+Location rewards write into the module-global `v5`, which outlives the `Game`.
+Clearing the shrine three times left `orbitDuration` at 6.5 → 11.232 for every
+arena and tutorial run afterwards. The two keys a reward can touch are now
+captured before the first one lands and restored on `dispose()`; the debug
+sliders are untouched. Measured: 6.5 → 11.232 during the Kyoto run → **6.5** in
+the next one.
+
+### Losing a Kyoto fight counted as clearing it
+
+`endGame` called `journey.closeCurrent()` for victory *and* defeat, and that
+method only had a success path — so dying on the bridge incremented
+`locationsCleared`, logged `locationCombatEnded` and handed out the location's
+reward. A defeat now records `locationCombatAborted` and keeps the combat stats
+(how long they lasted and what it cost is the interesting part) while awarding
+nothing.
+
+### The log had two clocks
+
+Gameplay ran on capped, hit-stop-scaled delta time; `playDuration` and every
+recall timestamp came from `Date.now()`. A backgrounded tab pulled them minutes
+apart. Everything is stamped against the simulation clock now, and the real
+elapsed time is kept alongside it as `wallDuration` rather than thrown away.
+Measured on a fast-forwarded run: `playDuration 42.98` / `wallDuration 0.74`,
+where the old build would have reported 0.74 next to wave times of ~43.
+
+### The tutorial's hand-off could hijack a later choice
+
+Finishing the tutorial scheduled `setTimeout(() => startRun('arena'), 900)` with
+nothing able to cancel it, so going to the menu inside that second disposed the
+new state and forced the arena. A run token guards it. Measured: menu still
+showing 1.4 s later, and the normal hand-off still lands in the arena.
+
+### The mid-encounter lull ate enemies
+
+The Kyoto breather advanced `released` to 62 % of the budget instead of setting a
+flag, silently deleting every enemy in between — so encounters were smaller than
+their `LocationDef.budget` and the pacing numbers described a fight that never
+happened. Now a one-shot flag. Measured across all five locations: every one
+releases its full budget (30/36/40/38/62), still with exactly one lull.
+
+### The power fantasy is unchanged
+
+Same synthetic recall measured on both builds, 8 runs each:
+
+| | mean kills | range |
+| --- | --- | --- |
+| before | 17.63 | 14–21 |
+| after | 17.75 | 15–20 |
+
+The first single sample looked like a 22 → 16 regression. It was run-to-run
+variance, and it is the reason the table above exists.
+
+---
+
 ## Changed in v5.2
 
 Behaviour only. No new abilities, no growth/tengja/dash/recall/scatter/enemy changes.

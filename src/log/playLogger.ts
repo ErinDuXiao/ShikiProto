@@ -81,7 +81,14 @@ export interface PlayLog {
   version: string;
   mode: 'arena' | 'kyoto' | 'tutorial';
   playStartTime: string;
+  /**
+   * SIMULATION seconds -- the same clock every other timestamp in this log is
+   * measured against. It deliberately differs from wall-clock time: it stops
+   * while the tab is backgrounded and slows during hit stop.
+   */
   playDuration: number;
+  /** wall-clock seconds from the first frame to finalise, for comparison */
+  wallDuration: number;
   victory: boolean;
   result: 'victory' | 'defeat' | 'incomplete';
 
@@ -294,7 +301,22 @@ export class PlayLogger {
     console.log('[session] NEW SESSION | ID: ' + this.sessionId);
   }
 
+  /**
+   * The run's simulation clock, supplied by the Game.
+   *
+   * Everything else in the log -- wave times, boss times, exploration, growth
+   * milestones -- is stamped in simulation seconds. Reading wall-clock time
+   * here made recall timestamps and `playDuration` disagree with all of them,
+   * by minutes if the tab had ever been in the background. One clock now.
+   */
+  clock: (() => number) | null = null;
+
   now(): number {
+    if (this.clock) return r2(this.clock());
+    return this.wallNow();
+  }
+
+  wallNow(): number {
     return r2((Date.now() - this.startEpoch) / 1000);
   }
 
@@ -333,6 +355,7 @@ export class PlayLogger {
       mode: x.mode,
       playStartTime: new Date(this.startEpoch).toISOString(),
       playDuration: this.now(),
+      wallDuration: this.wallNow(),
       victory: x.victory,
       result: x.result,
 
