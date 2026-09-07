@@ -2,6 +2,10 @@ import * as THREE from 'three';
 
 const MAX_PARTICLES = 700;
 const MAX_RINGS = 16;
+/** impact flashes alive at once; a big recall lands a dozen in one frame */
+const MAX_IMPACTS = 18;
+/** the camera's fixed tilt, so a flat quad can fake a billboard for free */
+const CAMERA_TILT = -Math.atan2(22, 28);
 
 /**
  * Lightweight game-feel layer: camera shake, hit stop, particles, expanding
@@ -25,6 +29,25 @@ export class Fx {
   private ringLife: number[] = [];
   private ringMaxLife: number[] = [];
   private ringGrow: number[] = [];
+
+  private impacts: THREE.Mesh[] = [];
+  private impactLife: number[] = [];
+  private impactMax: number[] = [];
+  private impactGrow: number[] = [];
+  private impactCursor = 0;
+
+  /**
+   * Camera response to a hit, kept separate from `shakeAmount`.
+   *
+   * Shake is noise -- it says "something happened" but not what or where. A
+   * kick pushes the view along the direction the blow travelled, and a punch
+   * dollies in for a fraction of a second. Both decay fast and both are applied
+   * on top of the rig's own position, which restore() puts back every frame.
+   */
+  private kickX = 0;
+  private kickZ = 0;
+  private punchAmount = 0;
+  private fwd = new THREE.Vector3();
 
   private dmgLayer = document.getElementById('dmg') as HTMLDivElement;
   private flashEl = document.getElementById('flash') as HTMLDivElement;
@@ -77,6 +100,32 @@ export class Fx {
       this.ringMaxLife.push(1);
       this.ringGrow.push(1);
     }
+
+    const impactGeo = new THREE.PlaneGeometry(1, 1);
+    const impactMat = new THREE.MeshBasicMaterial({
+      map: impactTexture(),
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      // A flash sits ON the target, so it must not be depth-tested against it.
+      // Placed at the contact point it lands inside the body and was being
+      // rejected outright -- the effect fired and nothing appeared.
+      depthTest: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+    });
+    for (let i = 0; i < MAX_IMPACTS; i++) {
+      const mesh = new THREE.Mesh(impactGeo, impactMat.clone());
+      mesh.rotation.x = CAMERA_TILT;
+      mesh.visible = false;
+      mesh.renderOrder = 4;
+      scene.add(mesh);
+      this.impacts.push(mesh);
+      this.impactLife.push(0);
+      this.impactMax.push(1);
+      this.impactGrow.push(1);
+    }
   }
 
   /** Living palette darkens the screen on a huge hit instead of whitening it. */
@@ -98,6 +147,105 @@ export class Fx {
 
   shake(amount: number) {
     this.shakeAmount = Math.min(1.4, this.shakeAmount + amount);
+  }
+
+  /** Shove the view along the direction a blow travelled. */
+  kick(dx: number, dz: number, amount: number) {
+    this.kickX += dx * amount;
+    this.kickZ += dz * amount;
+    const l = Math.hypot(this.kickX, this.kickZ);
+    if (l > 2.4) {
+      this.kickX = (this.kickX / l) * 2.4;
+      this.kickZ = (this.kickZ / l) * 2.4;
+    }
+  }
+
+  /** Snap the camera in a little. Reads as weight rather than as motion. */
+  punch(amount: number) {
+    this.punchAmount = Math.min(2.8, this.punchAmount + amount);
+  }
+
+  /**
+   * The moment of contact, at the point of contact.
+   *
+   * Two things the omnidirectional burst could not say: WHERE the blow landed,
+   * and which way it was going. Sparks are thrown in a cone along the travel
+   * direction with a little back-spray, and a flash quad opens on the spot for
+   * about a tenth of a second.
+   */
+  impact(
+    x: number,
+    y: number,
+    z: number,
+    dx: number,
+    dz: number,
+    strength: number,
+    color: THREE.ColorRepresentation = 0xfff2d0,
+  ) {
+    const st = Math.max(0.15, Math.min(1, strength));
+
+    const i = this.impactCursor;
+    this.impactCursor = (this.impactCursor + 1) % MAX_IMPACTS;
+    const m = this.impacts[i];
+    m.position.set(x, y, z);
+    // spin each one differently so a run of hits does not look stamped
+    m.rotation.z = Math.random() * Math.PI * 2;
+    // Sized against the target rather than the screen. An earlier pass grew
+    // these to ~8 units across, which stopped reading as an impact and started
+    // reading as a white blob over the fight.
+    const size = 1.2 + st * 3.0;
+    m.scale.setScalar(size * 0.55);
+    m.visible = true;
+    const mat = m.material as THREE.MeshBasicMaterial;
+    mat.color.set(color);
+    // Full bright on its OWN frame. Opacity was only being set in update(), so
+    // the first of a nine-frame effect rendered at whatever the pooled slot had
+    // left over -- usually near zero, which is the frame that matters most.
+    mat.opacity = 1;
+    this.impactLife[i] = 0.085 + st * 0.07;
+    this.impactMax[i] = this.impactLife[i];
+    this.impactGrow[i] = size * 2.6;
+
+    this.spray(x, y, z, dx, dz, Math.round(4 + st * 14), st, color);
+  }
+
+  /** sparks thrown along a direction rather than in all of them */
+  private spray(
+    x: number,
+    y: number,
+    z: number,
+    dx: number,
+    dz: number,
+    count: number,
+    strength: number,
+    color: THREE.ColorRepresentation,
+  ) {
+    const c = new THREE.Color(color);
+    const base = Math.atan2(dz, dx);
+    for (let k = 0; k < count; k++) {
+      const i3 = this.pCursor * 3;
+      this.pPos[i3] = x;
+      this.pPos[i3 + 1] = y;
+      this.pPos[i3 + 2] = z;
+      // most of it continues along the blow, a quarter sprays back off it
+      const back = Math.random() < 0.25;
+      const spread = back ? 1.5 : 0.55;
+      const a = base + (back ? Math.PI : 0) + (Math.random() - 0.5) * spread * 2;
+      const sp = (7 + strength * 26) * (0.4 + Math.random() * 0.9) * (back ? 0.5 : 1);
+      this.pVel[i3] = Math.cos(a) * sp;
+      this.pVel[i3 + 1] = (Math.random() - 0.15) * 5 + 2;
+      this.pVel[i3 + 2] = Math.sin(a) * sp;
+      this.pBase[i3] = c.r;
+      this.pBase[i3 + 1] = c.g;
+      this.pBase[i3 + 2] = c.b;
+      this.pCol[i3] = c.r;
+      this.pCol[i3 + 1] = c.g;
+      this.pCol[i3 + 2] = c.b;
+      const life = 0.16 + Math.random() * 0.22;
+      this.pLife[this.pCursor] = life;
+      this.pMax[this.pCursor] = life;
+      this.pCursor = (this.pCursor + 1) % MAX_PARTICLES;
+    }
   }
 
   stop(seconds: number) {
@@ -197,6 +345,15 @@ export class Fx {
     if (this.shakeAmount < 0.001) this.shakeAmount = 0;
     this.hitStop = Math.max(0, this.hitStop - dt);
 
+    // faster than the shake: a kick that lingers reads as a camera fault
+    const k = Math.exp(-13 * dt);
+    this.kickX *= k;
+    this.kickZ *= k;
+    if (Math.abs(this.kickX) < 0.0005) this.kickX = 0;
+    if (Math.abs(this.kickZ) < 0.0005) this.kickZ = 0;
+    this.punchAmount *= Math.exp(-10 * dt);
+    if (this.punchAmount < 0.002) this.punchAmount = 0;
+
     this.flash *= Math.exp(-9 * dt);
     if (this.flash < 0.004) this.flash = 0;
     this.flashEl.style.opacity = this.flash.toFixed(3);
@@ -226,6 +383,20 @@ export class Fx {
     this.points.geometry.attributes.position.needsUpdate = true;
     this.points.geometry.attributes.color.needsUpdate = true;
 
+    for (let i = 0; i < this.impacts.length; i++) {
+      if (this.impactLife[i] <= 0) continue;
+      this.impactLife[i] -= dt;
+      const m = this.impacts[i];
+      if (this.impactLife[i] <= 0) {
+        m.visible = false;
+        continue;
+      }
+      const t = this.impactLife[i] / this.impactMax[i];
+      m.scale.setScalar(m.scale.x + this.impactGrow[i] * dt);
+      // full bright the instant it lands, then straight out
+      (m.material as THREE.MeshBasicMaterial).opacity = t * t;
+    }
+
     for (let i = 0; i < this.rings.length; i++) {
       if (this.ringLife[i] <= 0) continue;
       this.ringLife[i] -= dt;
@@ -241,11 +412,20 @@ export class Fx {
   }
 
   applyShake(camera: THREE.Camera, t: number) {
-    if (this.shakeAmount <= 0) return;
-    const a = this.shakeAmount;
-    camera.position.x += Math.sin(t * 61) * a * 0.85;
-    camera.position.y += Math.sin(t * 47.3) * a * 0.5;
-    camera.position.z += Math.cos(t * 53.7) * a * 0.85;
+    if (this.shakeAmount > 0) {
+      const a = this.shakeAmount;
+      camera.position.x += Math.sin(t * 61) * a * 0.85;
+      camera.position.y += Math.sin(t * 47.3) * a * 0.5;
+      camera.position.z += Math.cos(t * 53.7) * a * 0.85;
+    }
+    if (this.kickX !== 0 || this.kickZ !== 0) {
+      camera.position.x += this.kickX;
+      camera.position.z += this.kickZ;
+    }
+    if (this.punchAmount > 0) {
+      camera.getWorldDirection(this.fwd);
+      camera.position.addScaledVector(this.fwd, this.punchAmount);
+    }
   }
 
   dispose() {
@@ -257,7 +437,52 @@ export class Fx {
       this.scene.remove(r);
     }
     this.rings[0]?.geometry.dispose();
+    for (const m of this.impacts) {
+      const mat = m.material as THREE.MeshBasicMaterial;
+      mat.map?.dispose();
+      mat.dispose();
+      this.scene.remove(m);
+    }
+    this.impacts[0]?.geometry.dispose();
     this.dmgLayer.innerHTML = '';
     this.flashEl.style.opacity = '0';
   }
+}
+
+/**
+ * A bright core with four tapered spikes -- the shape an impact reads as at a
+ * glance, drawn once and shared by every flash quad.
+ */
+function impactTexture(): THREE.CanvasTexture {
+  const N = 128;
+  const c = document.createElement('canvas');
+  c.width = c.height = N;
+  const ctx = c.getContext('2d')!;
+  const h = N / 2;
+
+  const g = ctx.createRadialGradient(h, h, 0, h, h, h * 0.42);
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.45, 'rgba(255,255,255,0.55)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, N, N);
+
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  for (let k = 0; k < 4; k++) {
+    ctx.save();
+    ctx.translate(h, h);
+    ctx.rotate((k * Math.PI) / 2 + Math.PI / 4);
+    ctx.beginPath();
+    ctx.moveTo(0, -h * 0.96);
+    ctx.lineTo(h * 0.075, 0);
+    ctx.lineTo(0, h * 0.16);
+    ctx.lineTo(-h * 0.075, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
 }

@@ -106,6 +106,46 @@ close they get to it.
 
 ---
 
+## Impact — what a hit feels like
+
+Reported as hits landing without weight. Four things were wrong, and the first
+one was not a tuning problem.
+
+**The killing blow showed nothing at all.** Hits are aggregated for 0.11 s
+before they are drawn, but a dead enemy is reaped the same frame it dies and
+`forget()` dropped its pending aggregate. So the most satisfying hits in the
+game — the ones that finish something — produced no damage number, no flash and
+no hit stop, only the death burst. Measured: **23 kills produced 10 impacts**.
+The pending aggregate is now emitted at the moment of the kill; the same test
+gives **29 impacts for 18 kills**.
+
+**The hit flash was almost invisible.** It peaked at a reddish orange on an
+already dark-red body. It blows out toward white now, and the body squashes with
+it (+30% wide, −22% tall) so the silhouette reacts too. Kept below full white
+on purpose: a real recall has up to **9 enemies lit at the same moment**, and
+the first pass at this whited out the screen.
+
+**Nothing said where the blow landed or which way it was going.** There is a
+flash at the contact point now — on the face the shikigami came in through, not
+the middle of the target — with sparks thrown in a cone along the travel
+direction and a quarter of them spraying back off it.
+
+**The camera only had noise.** Shake says "something happened" but not what.
+A hit now also *kicks* the view along the direction the blow travelled and
+*punches* it in for a fraction of a second, both scaled by how much of the flock
+went through. Kills punch too.
+
+Hit stop was raised where it was doing nothing: a small hit stopped for 0.018 s,
+which is one frame at 60fps and below the threshold where a stop registers as
+anything at all. It is 0.038 s now, 0.065 for ten-plus, 0.1 for a real sweep.
+
+**A graze is still not a strike.** Spread's light contact takes none of this —
+measured, 223 spread grazes fired **zero** impacts, kicks or punches.
+
+Cost: **2.0 ms/frame** during a 100-shikigami recall through 30 enemies.
+
+---
+
 ## 鬼 — dodge, then answer
 
 The brief's diagnosis was that the Oni was a wall rather than a rhythm. Three

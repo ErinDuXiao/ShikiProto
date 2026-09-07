@@ -416,11 +416,14 @@ export class Oni extends EnemyBase {
     this.group.position.y -= this.crouch;
     this.group.rotation.y = Math.atan2(this.facing.x, this.facing.z);
 
-    this.flash = Math.max(0, this.flash - dt * 5);
+    this.flash = Math.max(0, this.flash - dt * 7);
     const m = this.body.material as THREE.MeshStandardMaterial;
     const p3 = this.phase >= 3 ? 0.35 : 0;
+    const f = this.flash;
     m.color.setRGB(0.34, 0.05, 0.1);
-    m.emissive.setRGB(0.16 + p3 * 0.5 + this.flash * 1.1, 0.014 + this.flash * 0.5, 0.04 + this.flash * 0.5);
+    // white, for the same reason the yokai's is: a red flash on a red body is
+    // not a flash
+    m.emissive.setRGB(0.16 + p3 * 0.5 + f * 1.7, 0.014 + f * 1.5, 0.04 + f * 1.4);
     const pulse = this.phase >= 3 ? 1 + Math.sin(performance.now() * 0.006) * 0.03 : 1;
     this.group.scale.setScalar(this.baseScale * pulse);
     (this.shield.material as THREE.MeshBasicMaterial).opacity =

@@ -20,6 +20,9 @@ interface Accum {
   fromRecall: boolean;
   /** every contribution so far was a graze (orbit ring / spread sweep) */
   light: boolean;
+  /** summed travel direction of the contributing hits, normalised on emit */
+  dx: number;
+  dz: number;
 }
 
 export interface CombatTotals {
@@ -125,7 +128,7 @@ export class CombatSystem {
         s.lastHitId[i] = e.id;
         s.lastHitT[i] = time;
 
-        const killed = e.takeDamage(dmg);
+        const killed = e.takeDamage(dmg, isLight ? 0.3 : 1);
         this.onHit?.(e, dmg, isRecall);
         this.totals.damageDealt += dmg;
         if (s.type[i] === SType.TENGJA) {
@@ -153,11 +156,22 @@ export class CombatSystem {
         const knock = isLight ? 0.5 : 2.4;
         e.push(this.dir.x * knock * mult, this.dir.z * knock * mult);
 
-        this.record(e, dmg, mult, isRecall, isLight);
+        this.record(e, dmg, mult, isRecall, isLight, this.dir.x, this.dir.z);
 
         if (killed) {
           this.totals.enemiesKilled++;
           if (isRecall) this.recall.reportKill();
+          // The killing blow's own feedback used to be thrown away. Hits are
+          // aggregated for 0.11 s before they are shown, but a dead enemy is
+          // reaped the same frame and forget() dropped its pending aggregate --
+          // so the most satisfying hits in the game, the ones that finish
+          // something, showed no damage number, no impact and no hit stop.
+          // Measured: 23 kills produced 10 impacts.
+          const pending = this.accum.get(e.id);
+          if (pending) {
+            this.accum.delete(e.id);
+            this.emit(pending);
+          }
           this.onKill?.(e);
           this.killFx(e);
           break;
@@ -211,7 +225,7 @@ export class CombatSystem {
 
       // 牽制: nudged back out of the ring rather than punted
       e.push(this.dir.x * 3.4, this.dir.z * 3.4);
-      this.record(e, dmg, mult, false, true);
+      this.record(e, dmg, mult, false, true, 0, 0);
 
       if (killed) {
         this.totals.enemiesKilled++;
@@ -221,7 +235,15 @@ export class CombatSystem {
     }
   }
 
-  private record(e: EnemyBase, dmg: number, mult: number, fromRecall: boolean, light: boolean) {
+  private record(
+    e: EnemyBase,
+    dmg: number,
+    mult: number,
+    fromRecall: boolean,
+    light: boolean,
+    dx = 0,
+    dz = 0,
+  ) {
     let a = this.accum.get(e.id);
     if (!a) {
       a = {
@@ -232,12 +254,16 @@ export class CombatSystem {
         guardOnly: true,
         fromRecall: false,
         light: true,
+        dx: 0,
+        dz: 0,
       };
       this.accum.set(e.id, a);
     }
     a.count++;
     a.damage += dmg;
     a.timer = AGGREGATE_WINDOW;
+    a.dx += dx;
+    a.dz += dz;
     if (mult >= 0.9) a.guardOnly = false;
     if (fromRecall) a.fromRecall = true;
     if (!light) a.light = false;
@@ -260,6 +286,14 @@ export class CombatSystem {
     const dmg = Math.round(a.damage);
     const big = a.count >= 12;
 
+    // Where the blow actually arrived, rather than the middle of the target:
+    // the flash sits on the face the shikigami came in through.
+    const dl = Math.hypot(a.dx, a.dz);
+    const ux = dl > 0.001 ? a.dx / dl : 0;
+    const uz = dl > 0.001 ? a.dz / dl : 0;
+    const hx = e.pos.x - ux * e.radius * 0.75;
+    const hz = e.pos.z - uz * e.radius * 0.75;
+
     // spec 6: a graze must never read like a recall. Small number, small
     // flash, no hit stop, no shake.
     if (a.light) {
@@ -272,6 +306,8 @@ export class CombatSystem {
     if (a.guardOnly && a.count >= 3) {
       this.fx.damageNumber(this.tmp, this.camera, 'GUARD ' + dmg, 'guard');
       this.fx.burst(e.pos.x, e.hitHeight, e.pos.z, 6, 0x6fd2ff, 4, 0.3);
+      // it landed, it just did not get through -- a hard, cold, small impact
+      this.fx.impact(hx, e.hitHeight, hz, ux, uz, 0.25, 0x8fe2ff);
       this.sfx.hit(0.15);
       return;
     }
@@ -287,18 +323,27 @@ export class CombatSystem {
       0.4,
     );
 
+    // 0 for a single shikigami, 1 once a real chunk of the flock is through
+    const weight = Math.min(1, a.count / 22);
+    this.fx.impact(hx, e.hitHeight, hz, ux, uz, 0.28 + weight * 0.72, big ? 0xfff6dc : 0xffe2b4);
+    // the view is shoved the way the blow was going
+    this.fx.kick(ux, uz, 0.1 + weight * 0.34);
+    this.fx.punch(0.05 + weight * 0.3);
+
     if (a.count >= 24) {
-      this.fx.stop(0.075);
+      this.fx.stop(0.1);
       this.fx.shake(0.7);
       this.fx.screenFlash(0.16);
       this.fx.ring(e.pos.x, e.pos.z, 1, 11, 0.34, 0xfff0b0);
       this.sfx.bigHit(a.count);
     } else if (a.count >= 10) {
-      this.fx.stop(0.045);
+      this.fx.stop(0.065);
       this.fx.shake(0.38);
       this.sfx.bigHit(a.count);
     } else {
-      this.fx.stop(0.018);
+      // 0.018 was a single frame at 60fps -- below the threshold where a stop
+      // registers as anything at all
+      this.fx.stop(0.038);
       this.fx.shake(0.12);
       this.sfx.hit(Math.min(1, a.count / 8));
     }
@@ -317,6 +362,7 @@ export class CombatSystem {
     this.fx.burst(e.pos.x, e.hitHeight, e.pos.z, e.isBoss ? 160 : 34, 0xc4485a, e.isBoss ? 18 : 9, 0.8);
     this.fx.ring(e.pos.x, e.pos.z, 1, e.isBoss ? 22 : 7, 0.5, 0xff8866);
     this.fx.shake(e.isBoss ? 1.0 : 0.35);
+    this.fx.punch(e.isBoss ? 0.9 : 0.12);
     this.sfx.enemyDown();
   }
 

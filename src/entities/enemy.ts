@@ -92,11 +92,15 @@ export abstract class EnemyBase {
     return 1;
   }
 
-  /** Returns true if this hit killed it. */
-  takeDamage(amount: number): boolean {
+  /**
+   * @param impactWeight how hard this reads, 0..1. A spread graze and a full
+   * recall both call this; only one of them should make the body blow out.
+   * @returns true if this hit killed it.
+   */
+  takeDamage(amount: number, impactWeight = 1): boolean {
     if (!this.alive) return false;
     this.hp -= amount;
-    this.flash = 1;
+    this.flash = Math.max(this.flash, impactWeight);
     if (this.hp <= 0) {
       this.hp = 0;
       this.alive = false;
@@ -262,7 +266,9 @@ export class Yokai extends EnemyBase {
   }
 
   private paintBody(dt: number, frozen: boolean) {
-    this.flash = Math.max(0, this.flash - dt * 6);
+    // quick enough to read as a snap rather than a glow, and short enough that
+    // consecutive hits do not stack into a constant glare
+    this.flash = Math.max(0, this.flash - dt * 11);
     const m = this.mesh.material as THREE.MeshStandardMaterial;
     const eye = this.eye.material as THREE.MeshBasicMaterial;
     if (frozen) {
@@ -273,9 +279,18 @@ export class Yokai extends EnemyBase {
     } else {
       // dark red ink against a black field
       m.color.setRGB(0.28, 0.055, 0.09);
-      m.emissive.setRGB(0.11 + this.flash * 1.4, 0.012 + this.flash * 0.5, 0.03 + this.flash * 0.5);
+      // The hit flash blows out to WHITE. It used to peak at a reddish orange
+      // on an already dark-red body, which is almost no contrast -- the single
+      // fastest piece of feedback in the game was the one hardest to see.
+      const f = this.flash;
+      // Hot enough to read as white, not so hot that a recall through a crowd
+      // whites out the screen -- measured, a single pull has up to 9 of these
+      // lit at the same moment.
+      m.emissive.setRGB(0.11 + f * 1.5, 0.012 + f * 1.25, 0.03 + f * 1.2);
       eye.color.setHex(0xffb24a);
     }
-    this.mesh.scale.setScalar(1 + this.flash * 0.12);
+    // squash on the way in, so the silhouette itself reacts
+    const f = this.flash;
+    this.mesh.scale.set(1 + f * 0.3, 1 - f * 0.22, 1 + f * 0.3);
   }
 }
